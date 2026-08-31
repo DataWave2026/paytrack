@@ -408,12 +408,33 @@ async function stub() {
   );
 }
 
+// Google's image-to-Doc OCR conversion rejects large files (~2MB cap) and
+// some phone formats (HEIC), so shrink + re-encode to JPEG in the browser.
+async function normalizeImage(file, maxDim = 2200, quality = 0.85) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    let blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+    if (blob && blob.size > 1900000) {
+      blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.6));
+    }
+    return blob || file;
+  } catch {
+    return file;   // e.g. PDFs — upload as-is
+  }
+}
+
 async function runStubPipeline(file) {
   if (!auth.hasCredentials()) { toast('Connect Google in Setup first.'); return; }
   const status = h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), ' Reading stub…');
   viewEl.replaceChildren(status);
   try {
-    const text = await g.ocrImage(file);   // temp OCR doc is deleted; photo is not stored
+    const img = file.type === 'application/pdf' ? file : await normalizeImage(file);
+    const text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
     const parsed = parseStub(text || '');
     confirmStubForm(parsed, null, text);
   } catch (e) {
@@ -685,7 +706,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
