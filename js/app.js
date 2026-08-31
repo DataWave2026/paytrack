@@ -388,24 +388,26 @@ async function stub() {
     stubFile = e.target.files[0] || null;
     render('stub');
   };
-  // Two separate inputs: `capture` jumps straight to the camera on phones
-  // (never showing the library), so the library/file picker must not have it.
+  // Two hidden inputs behind clearly labeled buttons. `capture` jumps
+  // straight to the camera on phones AND restricts the Mac file dialog, so
+  // the file-picker input must not have it (and no accept filter either —
+  // some pickers grey out HEIC/PDF regardless of what the filter says).
   const cameraInput = h('input', {
-    type: 'file', accept: 'image/*', capture: 'environment', onchange: onPick,
+    type: 'file', accept: 'image/*', capture: 'environment',
+    style: 'display:none', onchange: onPick,
   });
-  // No accept filter: some pickers grey out HEIC/etc. no matter what the
-  // filter says — let anything be chosen and validate after.
-  const libraryInput = h('input', { type: 'file', onchange: onPick });
+  const libraryInput = h('input', { type: 'file', style: 'display:none', onchange: onPick });
   const connected = auth.isConnected() || auth.hasCredentials();
 
-  return h('div', {},
-    h('div', { class: 'card' },
-      h('h2', {}, 'Scan a paystub'),
-      h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'),
-      h('label', {}, 'Take a photo'),
-      cameraInput,
-      h('label', {}, 'Or choose an existing photo / file'),
-      libraryInput,
+  const card = h('div', { class: 'card' },
+    h('h2', {}, 'Scan a paystub'),
+    h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'),
+    cameraInput, libraryInput,
+    h('div', { class: 'row2 mt' },
+      h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => cameraInput.click() }, 'Take a photo'),
+      h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => libraryInput.click() }, 'Choose a file…')),
+    h('p', { class: 'muted small mt' }, '…or drag a photo onto this box.'),
+    h('div', {},
       stubFile ? h('img', { class: 'stub-preview', src: URL.createObjectURL(stubFile) }) : null,
       stubFile ? h('button', {
         class: 'primary', onclick: () => runStubPipeline(stubFile),
@@ -413,6 +415,15 @@ async function stub() {
       h('button', { class: 'secondary', onclick: () => confirmStubForm(blankParse(), null, null) },
         'Enter a stub manually instead')),
   );
+  card.addEventListener('dragover', (e) => { e.preventDefault(); card.style.borderColor = 'var(--accent)'; });
+  card.addEventListener('dragleave', () => { card.style.borderColor = ''; });
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    card.style.borderColor = '';
+    const f = e.dataTransfer.files?.[0];
+    if (f) { stubFile = f; render('stub'); }
+  });
+  return h('div', {}, card);
 }
 
 // Google's image-to-Doc OCR conversion rejects large files (~2MB cap) and
@@ -715,7 +726,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
