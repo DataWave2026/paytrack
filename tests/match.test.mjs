@@ -47,6 +47,20 @@ test('irrelevant stub matches nothing strongly', () => {
   assert.ok(m.length === 0 || m[0].score < 30);
 });
 
+test('gear-only stub matches via gear amount + dates', () => {
+  const withGear = [...jobs, { id: 'g', project: 'Gear Show', start_date: '2026-08-16',
+    end_date: '2026-08-22', gear_total: 1000, gear_status: 'unpaid', wages_status: 'paid' }];
+  const stub = {
+    project_name: '', employer: 'Some Payroll',
+    period_start: '2026-08-17', period_end: '2026-08-18',
+    hourly_rates: [], gear_amount: 1000,
+  };
+  const m = matchStub(stub, withGear);
+  assert.equal(m[0].job.id, 'g');
+  assert.ok(m[0].reasons.includes('gear amount matches'));
+  assert.ok(m[0].score >= 70);
+});
+
 test('deleted jobs are never candidates', () => {
   const withDeleted = [...jobs, { id: 'd', project: 'Ritual', deleted: true,
     start_date: '2026-08-16', end_date: '2026-08-22', rate_amount: 900, rate_hours: 11 }];
