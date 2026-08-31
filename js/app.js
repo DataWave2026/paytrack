@@ -481,10 +481,15 @@ async function runStubPipeline(file) {
 function confirmStubForm(parsed, uploaded, ocrText) {
   const p = { ...parsed };
   const input = (key, attrs = {}) => h('input', {
-    value: Array.isArray(p[key]) ? p[key].join(', ') : (p[key] ?? ''), ...attrs,
+    value: Array.isArray(p[key])
+      ? (key === 'hourly_rates' ? p[key].map(r => '$' + r).join(', ') : p[key].join(', '))
+      : (p[key] ?? ''), ...attrs,
     oninput: (e) => {
-      if (key === 'hourly_rates') p[key] = e.target.value.split(/[,\s]+/).map(Number).filter(n => !Number.isNaN(n));
-      else if (attrs.type === 'number') p[key] = e.target.value === '' ? null : parseFloat(e.target.value);
+      if (key === 'hourly_rates') {
+        p[key] = e.target.value.split(/[,\s]+/)
+          .map(v => parseFloat(v.replace(/[^0-9.]/g, '')))
+          .filter(n => !Number.isNaN(n));
+      } else if (attrs.type === 'number') p[key] = e.target.value === '' ? null : parseFloat(e.target.value);
       else p[key] = e.target.value;
     },
   });
@@ -529,7 +534,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Check #'), input('check_no')),
       h('div', {}, h('label', {}, 'Check date'), input('check_date', { type: 'date' }))),
-    h('label', {}, 'Hourly rates seen (comma-separated)'), input('hourly_rates', { placeholder: '81.82, 90' }),
+    h('label', {}, 'Hourly rates seen (comma-separated)'), input('hourly_rates', { placeholder: '$81.82, $90' }),
     h('label', {}, 'Earnings breakdown (kept with the stub record)'),
     earnBox,
     ocrText ? h('details', { class: 'mt' },
@@ -782,7 +787,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
