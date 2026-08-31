@@ -22,9 +22,13 @@ html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  display: flex; flex-direction: column;
+  display: grid;
+  grid-template-areas: "header header" "nav main";
+  grid-template-columns: 150px 1fr;
+  grid-template-rows: auto 1fr;
   padding-top: env(safe-area-inset-top);
 }
+#topbar { grid-area: header; }
 #topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px; border-bottom: 1px solid var(--line);
@@ -34,20 +38,30 @@ body {
 #conn-status.on { color: var(--accent); }
 #conn-status.warn { color: var(--warn); }
 
-#view { flex: 1; overflow-y: auto; padding: 14px 14px 90px; max-width: 760px; width: 100%; margin: 0 auto; }
+#view { grid-area: main; overflow-y: auto; padding: 14px; max-width: 760px; width: 100%; }
 
 #tabs {
-  position: fixed; bottom: 0; left: 0; right: 0;
-  display: flex; border-top: 1px solid var(--line); background: var(--panel);
-  padding-bottom: env(safe-area-inset-bottom);
+  grid-area: nav;
+  display: flex; flex-direction: column; gap: 2px;
+  border-right: 1px solid var(--line); background: var(--panel);
+  padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+  overflow-y: auto;
 }
 #tabs button {
-  flex: 1; background: none; border: none; color: var(--muted);
-  font-size: 1.2rem; padding: 8px 0 6px; cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: none; border: none; color: var(--muted);
+  border-left: 3px solid transparent; border-radius: 0 8px 8px 0;
+  font-size: .95rem; font-weight: 600; text-align: left;
+  padding: 11px 12px; cursor: pointer;
 }
-#tabs button span { font-size: .65rem; }
-#tabs button.active { color: var(--accent); }
+#tabs button.active {
+  color: var(--accent); border-left-color: var(--accent);
+  background: var(--panel2);
+}
+@media (max-width: 480px) {
+  body { grid-template-columns: 92px 1fr; }
+  #tabs { padding: 8px 4px; }
+  #tabs button { font-size: .82rem; padding: 10px 8px; }
+}
 
 .card {
   background: var(--panel); border: 1px solid var(--line);
