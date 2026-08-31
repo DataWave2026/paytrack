@@ -242,6 +242,42 @@ $1,759.10`;
   assert.deepEqual(p.earnings[3], { type: 'OT X2.0', hours: 0.5, rate: 163.64, amount: 81.82 });
 });
 
+test('controlling employer with LLC suffix is the employer, never the loan-out co', () => {
+  const text = `WRAPBOOK
+Check Date
+Name
+Address
+Classification
+Job Title
+Loan Out Company
+Controlling Employer
+Payroll Employer
+Project
+Work Period Start Date
+Work Period End Date Days Worked
+Aug 20, 2026
+1234 Example Media (Doe, Jane M.), XX-XXX
+123 Example St, Los Angeles, CA, 90000
+Loan Out
+Digital Imaging Tech
+1234 ExampleMedia, 123 Example St, Los Angeles, CA, 90000
+Netflix Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
+YA Social Content Day
+Aug 9, 2026 Aug 15, 2026
+2
+Gross Earnings:
+$1,922.73
+Paid by Check #10012606 on Aug 20, 2026`;
+  const p = parseStub(text);
+  assert.equal(p.employer, 'Netflix Media, LLC');
+  assert.equal(p.payroll_employer, 'TakeOne Network Corp.');
+  assert.equal(p.payee, '1234 Example Media');
+  assert.equal(p.paid_to, 'company');
+  assert.equal(p.project_name, 'YA Social Content Day');
+  assert.equal(p.period_start, '2026-08-09');
+  assert.equal(p.period_end, '2026-08-15');
+});
+
 test('kit fee / box rental lines are recognized as gear payment', async () => {
   const { gearOnStub } = await import('../js/parse.js');
   const text = `WRAPBOOK

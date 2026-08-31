@@ -95,7 +95,7 @@ export function blankParse() {
     vendor: '', project_name: '', employer: '', period_start: '', period_end: '',
     hourly_rates: [], hours: null, gross: null, net: null,
     check_no: '', check_date: '', day_count: null, earnings: [],
-    payee: '', classification: '', job_title: '',
+    payee: '', classification: '', job_title: '', payroll_employer: '',
     paid_to: '',               // 'company' | 'me' | '' unknown
   };
 }
@@ -287,8 +287,9 @@ function parseWrapbook(text) {
   const companyAddr = (l) => {
     if (isStandaloneDate(l) || parseDate(l.slice(0, 20)) || /\bcheck\b|paid\s+by/i.test(l)) return null;
     // Company then address. "3038DigitalMedia, 422 …" counts (digits glued to
-    // letters); "422 Avenue 64, …" is a street address and doesn't.
-    return l.match(/^((?:\d+[A-Za-z]|[A-Za-z])[^,]{0,45}?),\s*\d/);
+    // letters); "422 Avenue 64, …" is a street address and doesn't. An entity
+    // suffix may sit between the name and the address: "Netflix Media, LLC, 1 …".
+    return l.match(/^((?:\d+[A-Za-z]|[A-Za-z])[^,]{0,45}?(?:,?\s*(?:LLC|L\.L\.C\.?|Inc\.?|Corp\.?|Ltd\.?|Co\.))?),\s*\d/i);
   };
   const squash = (s) => (s || '').replace(/\s/g, '').toLowerCase();
 
@@ -319,14 +320,27 @@ function parseWrapbook(text) {
     if (!ca) continue;
     // Skip only when the payroll processor is the company NAME itself — OCR
     // may merge the employer's line with the payroll company's line.
-    if (/wrapbook|payroll|\bdba\b/i.test(ca[1])) continue;
+    if (/wrapbook|payroll|\bdba\b/i.test(ca[1])) {
+      if (!p.payroll_employer) p.payroll_employer = ca[1].replace(/\s+DBA\b.*$/i, '').trim();
+      continue;
+    }
     // Never pick the payee's own (loan-out) company, even on a partial match.
     const a = squash(ca[1]), b = squash(p.payee);
     if (b && (a.includes(b) || b.includes(a))) continue;
     p.employer = ca[1].trim();
     break;
   }
-  return parseGenericInto(p, text);
+  // Payroll employer: the "X DBA Wrapbook" company, wherever the OCR put it.
+  if (!p.payroll_employer) {
+    const dba = text.match(/([A-Za-z][A-Za-z0-9 .&-]{2,40}?)\s+DBA\b/);
+    if (dba) p.payroll_employer = dba[1].trim();
+  }
+  parseGenericInto(p, text);
+  // The generic label fallback can misfire on scrambled OCR — the employer
+  // must never be the payee's own company.
+  const ea = squash(p.employer), eb = squash(p.payee);
+  if (ea && eb && (ea.includes(eb) || eb.includes(ea))) p.employer = '';
+  return p;
 }
 
 const VENDORS = [
