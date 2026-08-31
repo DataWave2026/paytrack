@@ -31,9 +31,15 @@ function toast(msg, ms = 3000) {
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
 }
 
-const fmt$ = (n) => n === null || n === undefined || Number.isNaN(n) ? '—'
-  : '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
+// Privacy eye: when on, every dollar amount renders masked, app-wide.
+let hideMoney = settings().hideMoney;
+const MASK = '$•••';
+const fmt$ = (n) => {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  if (hideMoney) return MASK;
+  return '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
     ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 const today = () => new Date().toISOString().slice(0, 10);
 
 function fmtRange(a, b, alwaysYear = false) {
@@ -139,10 +145,10 @@ async function home() {
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     overdue.length ? h('div', { class: 'card' },
       h('h2', {}, 'Overdue'),
-      overdue.map(jobRow)) : null,
+      overdue.map(j => jobRow(j, stubsByJob))) : null,
     h('div', { class: 'card' },
       h('h2', {}, 'Recent jobs'),
-      jobs.length ? jobs.slice(0, 8).map(jobRow)
+      jobs.length ? jobs.slice(0, 8).map(j => jobRow(j, stubsByJob))
         : h('p', { class: 'muted' }, 'No jobs yet. Add one in the Jobs tab, or import your calendar history from the Review tab.')),
   );
 }
@@ -153,14 +159,17 @@ function statusBadge(kind, status) {
   return h('span', { class: 'badge ' + status }, `${kind}: ${label}`);
 }
 
-function jobRow(job) {
-  const rate = job.rate_amount && job.rate_hours ? `$${job.rate_amount}/${job.rate_hours}`
+function jobRow(job, stubsByJob) {
+  const rate = job.rate_amount && job.rate_hours
+    ? (hideMoney ? MASK : `$${job.rate_amount}/${job.rate_hours}`)
     : job.rate_text || '';
+  const w = stubsByJob ? jobWages(job, stubsByJob) : null;
+  const amt = w ? `${w.actual ? '' : '~'}${fmt$(w.amount)} wages` : '';
   return h('div', { class: 'job', onclick: () => render('jobs').then(() => editJob(job)) },
     h('div', {},
       h('div', { class: 'title' }, job.project || '(untitled)'),
       h('div', { class: 'sub' }, [fmtRange(job.start_date, job.end_date),
-        job.days_worked ? `${job.days_worked} day${job.days_worked === 1 ? '' : 's'}` : '', rate,
+        job.days_worked ? `${job.days_worked} day${job.days_worked === 1 ? '' : 's'}` : '', rate, amt,
         job.gear_total ? `gear ${fmt$(job.gear_total)}` : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'badges' },
       statusBadge('wages', job.wages_status),
@@ -170,11 +179,16 @@ function jobRow(job) {
 // ---------- jobs ----------
 async function jobs() {
   const jobs = await store.allJobs();
+  const stubs = await store.allStubs();
+  const stubsByJob = {};
+  for (const s of stubs) {
+    if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
+  }
   return h('div', {},
     h('button', { class: 'primary', onclick: () => editJob(null) }, '+ Add job'),
     h('div', { class: 'card mt' },
       h('h2', {}, `All jobs (${jobs.length})`),
-      jobs.length ? jobs.map(jobRow) : h('p', { class: 'muted' }, 'Nothing yet.')),
+      jobs.length ? jobs.map(j => jobRow(j, stubsByJob)) : h('p', { class: 'muted' }, 'Nothing yet.')),
   );
 }
 
@@ -999,8 +1013,23 @@ function applyTheme() {
 }
 applyTheme();
 
+const EYE_OPEN = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/><line x1="3" y1="21" x2="21" y2="3"/></svg>';
+const eyeBtn = document.getElementById('money-eye');
+function drawEye() {
+  eyeBtn.innerHTML = hideMoney ? EYE_OFF : EYE_OPEN;
+  eyeBtn.classList.toggle('hidden-money', hideMoney);
+}
+eyeBtn.addEventListener('click', () => {
+  hideMoney = !hideMoney;
+  saveSettings({ hideMoney });
+  drawEye();
+  render();
+});
+drawEye();
+
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v40';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
