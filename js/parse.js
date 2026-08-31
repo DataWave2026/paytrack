@@ -85,11 +85,11 @@ export function blankParse() {
     vendor: '', project_name: '', employer: '', period_start: '', period_end: '',
     hourly_rates: [], hours: null, gross: null, net: null,
     check_no: '', check_date: '', day_count: null, earnings: [],
-    payee: '', classification: '',
+    payee: '', classification: '', job_title: '',
   };
 }
 
-const EARN_TYPES = /(straight\s+time|overtime|ot\s*x?\s*[12](?:\.\d)?|meal\s+penalt(?:y|ies)|holiday|vacation|sick|kit\s+rental|box\s+rental|equipment\s+rental|per\s+diem|mileage|night\s+premium|[67]th\s+day|rest\s+invasion|wardrobe|idle\s+day|travel|wrap|prep)/i;
+const EARN_TYPES = /\b(straight\s+time|overtime|ot\s*[x×]?\s*[12](?:[.,]\d)?|meal\s+penalt(?:y|ies)|holiday|vacation|sick|kit\s+rental|box\s+rental|equipment\s+rental|per\s+diem|mileage|night\s+premium|[67]th\s+day|rest\s+invasion|wardrobe|idle\s+day|travel|wrap|prep)\b/i;
 
 // Catalog the earnings table: type, hours, rate, amount per line. Handles
 // row-per-line layouts AND column-style OCR (all types, then all hours, then
@@ -99,13 +99,15 @@ export function parseEarnings(text) {
   const start = text.search(/earning\s+type/i);
   if (start >= 0) {
     seg = text.slice(start);
-    const end = seg.search(/total\s+hours|gross\s+earnings/i);
+    // Cut at gross earnings, NOT at "Total Hours Worked" — in column-style
+    // OCR that label appears before the values do.
+    const end = seg.search(/gross\s+earnings/i);
     if (end > 0) seg = seg.slice(0, end);
   }
   const ls = seg.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const entries = [], types = [], hoursCol = [], ratesCol = [], amountsCol = [];
   for (const l of ls) {
-    if (/^(earning\s+type|time\s+worked|rate|work\s+location|amount)$/i.test(l)) continue;
+    if (/^(earning\s+type|time\s+worked|rate(\s+work\s+location)?|work\s+location|amount|total\s+hours(\s+worked)?)$/i.test(l)) continue;
     const t = l.match(EARN_TYPES);
     if (t) {
       const rest = l.slice(t.index + t[0].length);
@@ -122,7 +124,8 @@ export function parseEarnings(text) {
       } else types.push(t[0].trim());
     } else if (/^([\d.]+)\s*(?:hours?|hrs?)$/i.test(l)) {
       hoursCol.push(parseFloat(l));
-    } else if (/^\$?\s?[\d,.]+\s*\/\s*(?:hr|hour)$/i.test(l)) {
+    } else if (/^\$?\s?[\d,.]+\s*\/\s*(?:hr|hour)\b/i.test(l)) {
+      // rate lines often merge with the location column ("$81.82/hr Los Angeles, CA")
       ratesCol.push(parseMoney(l));
     } else if (/^\$\s?[\d,]+\.?\d*$/.test(l)) {
       amountsCol.push(parseMoney(l));
@@ -189,20 +192,88 @@ function parseGenericInto(p, text) {
   return p;
 }
 
+const isStandaloneDate = (l) =>
+  /^([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4})$/.test(l.trim());
+
+// Photographed Wrapbook stubs OCR as one giant label column followed by all
+// the values, with stray lines interleaved — so fields are anchored on what
+// the VALUES look like, not on positions relative to labels.
 function parseWrapbook(text) {
   const p = blankParse();
   p.vendor = 'Wrapbook';
   const ls = lines(text);
-  p.project_name = labeled(ls, /^project\b/i);
-  p.period_start = parseDate(labeled(ls, /work\s+period\s+start\s+date/i, isDate));
-  p.period_end = parseDate(labeled(ls, /work\s+period\s+end\s+date/i, isDate));
-  p.check_date = parseDate(labeled(ls, /check\s+date/i, isDate));
-  p.employer = labeled(ls, /controlling\s+employer/i).replace(/,.*$/, '');
-  const chk = text.match(/check\s*#\s*(\d+)\s+on\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i);
-  if (chk) { p.check_no = chk[1]; if (!p.check_date) p.check_date = parseDate(chk[2]); }
-  p.classification = labeled(ls, /^classification/i);
-  // Loan-out checks pay the company; otherwise the individual on the stub.
-  p.payee = (labeled(ls, /loan\s*out\s*company/i) || labeled(ls, /^name$/i)).replace(/,.*$/, '');
+
+  const chk = text.match(/check\s*#?\s*(\d+)\s+on\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i);
+  if (chk) { p.check_no = chk[1]; p.check_date = parseDate(chk[2]); }
+  if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date/i, isDate));
+
+  // Work period = the standalone date lines that aren't the check date.
+  const dateLines = ls.map((l, i) => ({ i, d: parseDate(l), standalone: isStandaloneDate(l) }))
+    .filter(x => x.standalone && x.d);
+  const period = dateLines.filter(x => x.d !== p.check_date).map(x => x.d).sort();
+  if (period.length) {
+    p.period_start = period[0];
+    p.period_end = period[period.length - 1];
+  }
+
+  // Project: the line right before the period-start date. Days worked: the
+  // small integer right after the period-end date.
+  const startLine = dateLines.find(x => x.d === p.period_start && x.d !== p.check_date);
+  if (startLine) {
+    const prev = ls[startLine.i - 1] || '';
+    if (prev && !LABELY.test(prev) && !parseDate(prev)) p.project_name = prev;
+  }
+  if (!p.project_name) p.project_name = labeled(ls, /^project\b/i);
+  const endLine = [...dateLines].reverse().find(x => x.d === p.period_end && x.d !== p.check_date);
+  if (endLine && /^\d{1,2}$/.test((ls[endLine.i + 1] || '').trim())) {
+    p.day_count = parseInt(ls[endLine.i + 1], 10);
+  }
+
+  // Payee: the Name value, shaped like "Company (Last, First M.), id".
+  let payeeIdx = -1;
+  for (let i = 0; i < ls.length; i++) {
+    const m = ls[i].match(/^(.{2,50}?)\s*\([A-Za-z].*\)/);
+    if (m && !LABELY.test(ls[i])) { p.payee = m[1].trim(); payeeIdx = i; break; }
+  }
+
+  if (ls.some(l => /^loan[\s-]*out$/i.test(l.trim()))) p.classification = 'Loan Out';
+
+  const companyAddr = (l) => {
+    if (isStandaloneDate(l) || parseDate(l.slice(0, 20)) || /\bcheck\b|paid\s+by/i.test(l)) return null;
+    return l.match(/^([A-Za-z][^,]{1,45}?),\s*\d/);
+  };
+  const squash = (s) => (s || '').replace(/\s/g, '').toLowerCase();
+
+  // After the name: job title is the first short no-digit line; the payee's
+  // own company reappearing with an address marks a loan-out.
+  if (payeeIdx >= 0) {
+    let loanOutCo = '';
+    for (let i = payeeIdx + 1; i < ls.length; i++) {
+      const l = ls[i];
+      if (LABELY.test(l) || parseDate(l)) continue;
+      // The payee's own company reappearing with an address = loan-out company
+      // (compared by name so it works for companies starting with digits).
+      const pref = l.split(',')[0];
+      if (l.includes(',') && squash(pref) === squash(p.payee)) { loanOutCo = pref; continue; }
+      if (!p.job_title && !/\d/.test(l) && !/^loan[\s-]*out$/i.test(l)
+          && l.split(/\s+/).length <= 5 && l !== p.project_name) {
+        p.job_title = l;
+      }
+      if (loanOutCo && p.job_title) break;
+    }
+    if (loanOutCo && !p.classification) p.classification = 'Loan Out';
+  }
+
+  // Controlling employer: first company-with-address that isn't the payee's
+  // company and isn't the payroll processor.
+  for (const l of ls) {
+    const ca = companyAddr(l);
+    if (!ca) continue;
+    if (/wrapbook|payroll|\bdba\b/i.test(l)) continue;
+    if (squash(ca[1]) === squash(p.payee)) continue;
+    p.employer = ca[1].trim();
+    break;
+  }
   return parseGenericInto(p, text);
 }
 

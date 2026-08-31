@@ -516,7 +516,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('label', {}, 'Employer / production co'), input('employer'),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Paid to (you or your company)'), input('payee')),
-      h('div', {}, h('label', {}, 'Classification'), input('classification', { placeholder: 'Loan Out / W-2 …' }))),
+      h('div', {}, h('label', {}, 'Job title'), input('job_title', { placeholder: 'Digital Imaging Tech' }))),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
@@ -604,7 +604,7 @@ async function pickMatch(p, uploaded, ocrText) {
           drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
-          earnings: p.earnings || [],
+          job_title: p.job_title || '', earnings: p.earnings || [],
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
           gross: p.gross, net: p.net, check_no: p.check_no, check_date: p.check_date,
@@ -775,7 +775,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
