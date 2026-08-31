@@ -39,7 +39,7 @@ body {
 #conn-status.on { color: var(--accent); }
 #conn-status.warn { color: var(--warn); }
 
-#view { grid-area: main; overflow-y: auto; padding: 14px; max-width: 760px; width: 100%; }
+#view { grid-area: main; overflow-y: auto; overflow-x: hidden; padding: 14px; max-width: 760px; width: 100%; }
 
 #tabs {
   grid-area: nav;
@@ -94,12 +94,18 @@ body {
 label { display: block; font-size: .75rem; color: var(--muted); margin: 18px 0 7px; }
 label:first-of-type { margin-top: 4px; }
 input, select, textarea {
-  width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--line);
+  width: 100%; min-width: 0; padding: 12px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--panel2); color: var(--text); font-size: 1rem;
+  box-sizing: border-box;
+}
+/* iOS date inputs have a rigid intrinsic width that overflows flex rows */
+input[type="date"] {
+  -webkit-appearance: none; appearance: none;
+  min-height: 47px; text-align: left;
 }
 textarea { min-height: 70px; }
 .row2 { display: flex; gap: 10px; }
-.row2 > div { flex: 1; }
+.row2 > div { flex: 1; min-width: 0; }
 
 button.primary, button.secondary, button.danger {
   padding: 12px 16px; border-radius: 10px; border: none; font-size: 1rem;
@@ -143,7 +149,7 @@ a { color: var(--accent); }
 .stub-preview { max-width: 100%; border-radius: 10px; margin-top: 10px; }
 
 .earnrow { display: grid; grid-template-columns: 2fr 1fr 1.1fr 1.2fr auto; gap: 6px; margin-bottom: 6px; }
-.earnrow input { padding: 8px; font-size: .85rem; }
+.earnrow input { padding: 8px; font-size: .85rem; min-width: 0; }
 
 table.tot { width: 100%; border-collapse: collapse; font-size: .9rem; }
 table.tot th { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
