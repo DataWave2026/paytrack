@@ -228,11 +228,21 @@ export async function pushUnsynced() {
 export async function pullCalendar() {
   const s = settings();
   if (!s.calendarId) return;
-  const since = s.lastCalPull || new Date(Date.now() - 30 * 86400000).toISOString();
-  const { items } = await g.listEvents(s.calendarId, {
+  const recent = () => new Date(Date.now() - 7 * 86400000).toISOString();
+  const params = (since) => ({
     updatedMin: since, showDeleted: 'true', singleEvents: 'true',
     timeMin: new Date(Date.now() - 400 * 86400000).toISOString(),
   });
+  let items;
+  try {
+    ({ items } = await g.listEvents(s.calendarId, params(s.lastCalPull || recent())));
+  } catch (e) {
+    // Google rejects an updatedMin that lies too far in the past (410) —
+    // fall back to a recent window and carry on.
+    if (/410/.test(e.message)) {
+      ({ items } = await g.listEvents(s.calendarId, params(recent())));
+    } else throw e;
+  }
   for (const ev of items) {
     const jobId = ev.extendedProperties?.private?.paytrackJobId;
     if (jobId) {
