@@ -3,7 +3,9 @@
 const KEY = 'paytrack.settings';
 
 const DEFAULTS = {
-  clientId: '',
+  // Public OAuth client identifier (not a secret); only works from the
+  // origins authorized in Google Cloud console.
+  clientId: '7774373744-6s6fh8h37p8rfprkde3o4fs4vsug1vkj.apps.googleusercontent.com',
   calendarId: '',            // Google calendar to sync with
   calendarName: '',
   sheetId: '',               // "PayTrack DB" spreadsheet

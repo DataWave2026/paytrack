@@ -1,6 +1,6 @@
 // Offline shell: cache-first for app files, network for everything else
 // (Google APIs must never be cached).
-const CACHE = 'paytrack-v2';
+const CACHE = 'paytrack-v3';
 const SHELL = [
   '.', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/auth.js', 'js/config.js', 'js/google.js', 'js/match.js',
