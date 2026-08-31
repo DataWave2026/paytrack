@@ -48,17 +48,8 @@ function jobDays(job) {
   return Math.max(1, d);
 }
 
-function dueDate(job) {
-  if (job.expected_pay_date) return job.expected_pay_date;
-  const base = job.end_date || job.start_date;
-  if (!base) return '';
-  const d = new Date(base + 'T00:00:00');
-  d.setDate(d.getDate() + (Number(settings().alertDays) || 14));
-  return d.toISOString().slice(0, 10);
-}
-
 function isOverdue(job) {
-  return sync.unpaidParts(job).length > 0 && dueDate(job) && dueDate(job) < today();
+  return Object.values(sync.jobDueDates(job)).some(d => d < today());
 }
 
 // ---------- views ----------
@@ -159,6 +150,23 @@ function segmented(name, value, options, onChange) {
   return seg;
 }
 
+function spanDays(j) {
+  if (j.days_worked) return j.days_worked;
+  if (!j.start_date) return null;
+  return Math.max(1, Math.round((new Date(j.end_date || j.start_date) - new Date(j.start_date)) / 86400000) + 1);
+}
+
+function gearUnits(j) {
+  const d = spanDays(j);
+  if (!d) return null;
+  return j.gear_period === 'week' ? Math.ceil(d / 7) : d;
+}
+
+function calcGearTotal(j) {
+  const u = gearUnits(j);
+  if (j.gear_rate && !j.gear_total && u) j.gear_total = j.gear_rate * u;
+}
+
 function addDaysStr(iso, n) {
   const d = new Date(iso + 'T00:00:00');
   d.setDate(d.getDate() + n);
@@ -184,14 +192,15 @@ function editJob(existing) {
     v => { job.rate_hours = parseInt(v, 10); hoursInput.value = v; });
 
   const gearHint = h('p', { class: 'muted small' }, '');
-  const gearDays = () => job.days_worked
-    || (job.start_date ? Math.max(1, Math.round((new Date(job.end_date || job.start_date) - new Date(job.start_date)) / 86400000) + 1) : null);
   const gearHintUpdate = () => {
-    const d = gearDays();
-    gearHint.textContent = job.gear_rate && d
-      ? `= ${fmt$(job.gear_rate * d)} gear total for ${d} day${d === 1 ? '' : 's'} (auto-filled on save if total left blank)`
+    const u = gearUnits(job);
+    gearHint.textContent = job.gear_rate && u
+      ? `= ${fmt$(job.gear_rate * u)} gear total for ${u} ${job.gear_period === 'week' ? 'week' : 'day'}${u === 1 ? '' : 's'} (auto-filled on save if total left blank)`
       : '';
   };
+  const gearSeg = segmented('gearper', job.gear_period || 'day',
+    [['day', 'Per day'], ['week', 'Per week']],
+    v => { job.gear_period = v; gearHintUpdate(); });
   gearHintUpdate();
 
   const form = h('div', { class: 'card' },
@@ -219,14 +228,16 @@ function editJob(existing) {
       [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.wages_status = v),
     h('div', { class: 'row2 mt' },
-      h('div', {}, h('label', {}, 'Gear / day ($)'), input('gear_rate', { type: 'number', inputmode: 'decimal', placeholder: '1200' })),
-      h('div', {}, h('label', {}, 'Gear total ($, or leave blank)'), input('gear_total', { type: 'number', inputmode: 'decimal' }))),
+      h('div', {}, h('label', {}, 'Gear rate ($)'), input('gear_rate', { type: 'number', inputmode: 'decimal', placeholder: '1200' })),
+      h('div', {}, h('label', {}, 'Rate is'), gearSeg)),
+    h('label', {}, 'Gear total ($, or leave blank to auto-fill from rate)'),
+    input('gear_total', { type: 'number', inputmode: 'decimal' }),
     gearHint,
     h('label', {}, 'Gear payment'),
     segmented('gear', job.gear_status,
       [['na', 'No gear'], ['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.gear_status = v),
-    h('label', {}, 'Expect payment by (blank = wrap + ' + settings().alertDays + ' days)'),
+    h('label', {}, `Expect payment by (blank = wrap + ${settings().alertDaysWages}d wages / +${settings().alertDaysGear}d gear)`),
     input('expected_pay_date', { type: 'date' }),
     h('label', {}, 'Notes'), h('textarea', {
       oninput: (e) => job.notes = e.target.value,
@@ -253,11 +264,7 @@ function editJob(existing) {
           toSave.push(job);
         }
         for (const j of toSave) {
-          if (j.gear_rate && !j.gear_total) {
-            const d = j.days_worked
-              || Math.max(1, Math.round((new Date(j.end_date || j.start_date) - new Date(j.start_date)) / 86400000) + 1);
-            if (j.start_date) j.gear_total = j.gear_rate * d;
-          }
+          calcGearTotal(j);
           await store.putJob(j);
           if (auth.isConnected()) sync.pushJob(j).catch(e => toast('Calendar sync: ' + e.message, 5000));
         }
@@ -512,9 +519,13 @@ async function settingsView() {
     value: s.clientId, placeholder: '1234…apps.googleusercontent.com',
     onchange: (e) => saveSettings({ clientId: e.target.value.trim() }),
   });
-  const alertInput = h('input', {
-    type: 'number', value: s.alertDays, inputmode: 'numeric',
-    onchange: (e) => saveSettings({ alertDays: parseInt(e.target.value, 10) || 14 }),
+  const wagesAlertInput = h('input', {
+    type: 'number', value: s.alertDaysWages, inputmode: 'numeric',
+    onchange: (e) => saveSettings({ alertDaysWages: parseInt(e.target.value, 10) || 14 }),
+  });
+  const gearAlertInput = h('input', {
+    type: 'number', value: s.alertDaysGear, inputmode: 'numeric',
+    onchange: (e) => saveSettings({ alertDaysGear: parseInt(e.target.value, 10) || 30 }),
   });
 
   const calCard = h('div', { class: 'card' },
@@ -561,8 +572,10 @@ async function settingsView() {
     calCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Alerts'),
-      h('label', {}, 'Consider unpaid overdue after (days past wrap)'), alertInput,
-      h('p', { class: 'muted small mt' }, 'Unpaid jobs get a "💰 Follow up" calendar event at that date with an email + notification from Google Calendar. Marking the job paid removes it.')),
+      h('div', { class: 'row2' },
+        h('div', {}, h('label', {}, 'Wages overdue after (days past wrap)'), wagesAlertInput),
+        h('div', {}, h('label', {}, 'Gear overdue after (days past wrap)'), gearAlertInput)),
+      h('p', { class: 'muted small mt' }, 'Unpaid jobs get a "Follow up" calendar event at the earlier of those dates, with an email + notification from Google Calendar. Marking the job paid removes it. A job\'s "expect payment by" date overrides both timers.')),
     h('div', { class: 'card' },
       h('h2', {}, 'Data'),
       h('p', { class: 'muted small' },

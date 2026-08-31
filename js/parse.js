@@ -143,14 +143,16 @@ export function parseStub(text) {
 // e.g. "$955/10 paid, $1200/gear paid" / "Scale paid, $1000/gear not yet paid"
 export function parseJobNote(note) {
   const out = { rate_amount: null, rate_hours: null, rate_text: '', gear_total: null,
-    gear_rate: null, wages_status: null, gear_status: null };
+    gear_rate: null, gear_period: null, wages_status: null, gear_status: null };
   if (!note) return out;
 
-  // "$1200/gear paid", "$1250/day gear not yet paid", "gear not yet paid"
+  // "$1200/gear paid", "$1250/day gear not yet paid", "$1500/wk for gear"
   const gear = note.match(/\$?\s?([\d,]+(?:\.\d{2})?)\s*(\/\s*(?:day|wk|week))?\s*(?:\/|for)?\s*\bgear\b([^,;.]*)/i);
   if (gear) {
-    if (gear[2]) out.gear_rate = parseMoney(gear[1]);
-    else out.gear_total = parseMoney(gear[1]);
+    if (gear[2]) {
+      out.gear_rate = parseMoney(gear[1]);
+      out.gear_period = /w(k|eek)/i.test(gear[2]) ? 'week' : 'day';
+    } else out.gear_total = parseMoney(gear[1]);
     out.gear_status = /not\s+yet|unpaid|pending|waiting/i.test(gear[3]) ? 'unpaid'
       : /paid/i.test(gear[3]) ? 'paid' : 'unpaid';
   } else {

@@ -6,7 +6,7 @@ import * as store from './store.js';
 import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked', 'rate_amount',
-  'rate_hours', 'rate_text', 'gear_rate', 'gear_total', 'wages_status', 'gear_status',
+  'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'period_start', 'period_end', 'hourly_rates', 'hours', 'gross', 'net', 'check_no',
@@ -129,6 +129,21 @@ export function unpaidParts(job) {
   return parts;
 }
 
+// Due date per unpaid part; expected_pay_date (if set) overrides both timers.
+export function jobDueDates(job) {
+  const s = settings();
+  const base = job.end_date || job.start_date;
+  if (!base || job.deleted) return {};
+  const out = {};
+  if (job.wages_status !== 'paid') {
+    out.wages = job.expected_pay_date || addDays(base, Number(s.alertDaysWages) || 14);
+  }
+  if (job.gear_status !== 'paid' && job.gear_status !== 'na') {
+    out.gear = job.expected_pay_date || addDays(base, Number(s.alertDaysGear) || 30);
+  }
+  return out;
+}
+
 export async function syncReminder(job) {
   const s = settings();
   if (!s.calendarId) return job;
@@ -141,8 +156,8 @@ export async function syncReminder(job) {
     }
     return job;
   }
-  let due = job.expected_pay_date
-    || addDays(job.end_date || job.start_date, Number(s.alertDays) || 14);
+  const dues = Object.values(jobDueDates(job));
+  let due = dues.sort()[0];   // earliest unpaid part drives the reminder
   // A due date in the past would never notify — nudge it to tomorrow.
   const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
   if (due < tomorrow) due = tomorrow;
@@ -273,6 +288,7 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     rate_amount: note.rate_amount, rate_hours: note.rate_hours,
     rate_text: note.rate_text,
     gear_total: note.gear_total, gear_rate: note.gear_rate,
+    gear_period: note.gear_period || 'day',
     wages_status: note.wages_status || 'unpaid',
     gear_status: note.gear_status || (note.gear_total || note.gear_rate ? 'unpaid' : 'na'),
     calendar_event_id: item.no_cal ? '' : item.id,
