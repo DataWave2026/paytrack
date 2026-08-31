@@ -138,6 +138,11 @@ export async function putStub(stub) {
   return stub;
 }
 
+export async function deleteStub(id) {
+  await tx('stubs', 'readwrite', s => s.delete(id));
+  changed();
+}
+
 // ---- Import queue (calendar events awaiting review) ----
 export async function allQueued() {
   return getAll('importQueue');
