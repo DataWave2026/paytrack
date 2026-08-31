@@ -68,8 +68,10 @@ function nameScore(stub, job) {
   for (const a of stubNames) {
     for (const b of jobNames) {
       if (!a || !b) continue;
-      if (a === b) best = Math.max(best, 30);
-      else if (a.includes(b) || b.includes(a)) best = Math.max(best, 22);
+      // An exact title match is close to decisive — gear checks often arrive
+      // dated after the worked days, so dates alone can't carry it.
+      if (a === b) best = Math.max(best, 40);
+      else if (a.includes(b) || b.includes(a)) best = Math.max(best, 25);
       else {
         const aw = new Set(a.split(' ')), bw = b.split(' ');
         const common = bw.filter(w => w.length > 2 && aw.has(w)).length;
@@ -94,7 +96,7 @@ export function matchStub(stub, jobs) {
       else if (o > 0) reasons.push('dates close');
       if (r >= 20) reasons.push('rate matches');
       else if (r > 0) reasons.push('OT rate matches');
-      if (n >= 22) reasons.push('name matches');
+      if (n >= 25) reasons.push('name matches');
       else if (n > 0) reasons.push('name similar');
       if (ga >= 25) reasons.push('gear amount matches');
       else if (ga > 0) reasons.push('gear amount close');
