@@ -56,7 +56,7 @@ export function blankJob() {
     id: uid(), project: '', company: '', start_date: '', end_date: '',
     days_worked: null,
     rate_amount: null, rate_hours: null, rate_text: '', gear_rate: null,
-    gear_total: null, wages_status: 'unpaid', gear_status: 'na',
+    gear_period: 'day', gear_total: null, wages_status: 'unpaid', gear_status: 'na',
     expected_pay_date: '', calendar_event_id: '', reminder_event_id: '',
     no_cal: false, notes: '', updated_at: now(), deleted: false,
   };
