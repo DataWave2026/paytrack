@@ -96,6 +96,7 @@ export function blankParse() {
     hourly_rates: [], hours: null, gross: null, net: null,
     check_no: '', check_date: '', day_count: null, earnings: [],
     payee: '', classification: '', job_title: '',
+    paid_to: '',               // 'company' | 'me' | '' unknown
   };
 }
 
@@ -250,14 +251,30 @@ function parseWrapbook(text) {
     p.day_count = parseInt(ls[endLine.i + 1], 10);
   }
 
-  // Payee: the Name value, shaped like "Company (Last, First M.), id".
+  // Payee from the Name value. "Company (Last, First M.), id" = paid to the
+  // company (the person is listed UNDER it); a bare personal name = paid to
+  // the person directly.
   let payeeIdx = -1;
   for (let i = 0; i < ls.length; i++) {
     const m = ls[i].match(/^(.{2,50}?)\s*\([A-Za-z].*\)/);
-    if (m && !LABELY.test(ls[i])) { p.payee = m[1].trim(); payeeIdx = i; break; }
+    if (m && !LABELY.test(ls[i])) {
+      p.payee = m[1].trim();
+      p.paid_to = 'company';
+      payeeIdx = i;
+      break;
+    }
+  }
+  if (!p.payee) {
+    const nameVal = labeled(ls, /^name$/i, v => !parseDate(v) && !/\$/.test(v));
+    const cleaned = nameVal.replace(/,\s*[Xx\d-]+\s*$/, '').trim();
+    if (cleaned && !/\d|\b(llc|inc|corp|ltd|media|productions?|pictures|films?|studios?)\b/i.test(cleaned)) {
+      p.payee = cleaned;
+      p.paid_to = 'me';
+    }
   }
 
   if (ls.some(l => /^loan[\s-]*out$/i.test(l.trim()))) p.classification = 'Loan Out';
+  if (!p.paid_to && p.classification === 'Loan Out') p.paid_to = 'company';
 
   const companyAddr = (l) => {
     if (isStandaloneDate(l) || parseDate(l.slice(0, 20)) || /\bcheck\b|paid\s+by/i.test(l)) return null;

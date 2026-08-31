@@ -29,6 +29,7 @@ test('wrapbook stub parses', () => {
   assert.match(p.employer, /Example Pictures/);
   assert.equal(p.payee, 'ExampleMedia LLC');
   assert.equal(p.classification, 'Loan Out');
+  assert.equal(p.paid_to, 'company');
   assert.equal(p.earnings.length, 5);
   assert.deepEqual(p.earnings[0], { type: 'Straight Time', hours: 8, rate: 81.82, amount: 654.55 });
   assert.deepEqual(p.earnings[2], { type: 'OT x1.5', hours: 4, rate: 122.73, amount: 490.91 });
@@ -236,8 +237,27 @@ $1,759.10`;
   assert.equal(p.day_count, 2);
   assert.equal(p.gross, 1759.10);
   assert.equal(p.net, 1759.10);
+  assert.equal(p.paid_to, 'company');
   assert.equal(p.earnings.length, 5);
   assert.deepEqual(p.earnings[3], { type: 'OT X2.0', hours: 0.5, rate: 163.64, amount: 81.82 });
+});
+
+test('bare personal name on the stub means paid to me', () => {
+  const text = `WRAPBOOK
+Check Date
+Aug 25, 2026
+Name
+Doe, Jane M., XX-XXX
+Address
+123 Example St, Los Angeles, CA, 90000
+Project
+Ritual
+Work Period Start Date
+Aug 16, 2026
+Gross Earnings: $1,200.00`;
+  const p = parseStub(text);
+  assert.equal(p.payee, 'Doe, Jane M.');
+  assert.equal(p.paid_to, 'me');
 });
 
 test('generic parser survives an unknown vendor', () => {

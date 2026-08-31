@@ -533,8 +533,12 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('label', {}, 'Project'), input('project_name'),
     h('label', {}, 'Employer / production co'), input('employer'),
     h('div', { class: 'row2' },
-      h('div', {}, h('label', {}, 'Paid to (you or your company)'), input('payee')),
+      h('div', {}, h('label', {}, 'Paid to (name on the check)'), input('payee')),
       h('div', {}, h('label', {}, 'Job title'), input('job_title', { placeholder: 'Digital Imaging Tech' }))),
+    h('label', {}, 'Payment went to'),
+    segmented('paidto', p.paid_to || '',
+      [['me', 'Me personally'], ['company', 'My company']],
+      v => p.paid_to = v),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
@@ -618,10 +622,11 @@ async function pickMatch(p, uploaded, ocrText) {
         // with company etc. without dumping the whole stub into it.
         if (!job.company && p.employer) job.company = p.employer;
         if (!job.days_worked && p.day_count) job.days_worked = p.day_count;
-        // Attribute the payment: Loan Out or a payee matching the user's
-        // company name means the check went to the company.
+        // Attribute the payment. The parser (or the user, via the selector)
+        // decided from the Name on the stub; fall back to classification.
         const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
-        if (/loan\s*-?\s*out/i.test(p.classification || '')) job.paid_via = 'company';
+        if (p.paid_to) job.paid_via = p.paid_to;
+        else if (/loan\s*-?\s*out/i.test(p.classification || '')) job.paid_via = 'company';
         else if (p.payee) {
           const comp = sq(settings().companyName);
           job.paid_via = comp && (sq(p.payee).includes(comp) || comp.includes(sq(p.payee)))
@@ -640,6 +645,7 @@ async function pickMatch(p, uploaded, ocrText) {
           drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
+          paid_to: p.paid_to || '',
           job_title: p.job_title || '', earnings: p.earnings || [],
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
@@ -812,13 +818,24 @@ async function settingsView() {
           try { await sync.pullSheet(); await sync.pullCalendar(); await sync.mirrorSheet(); toast('Synced ✓'); }
           catch (e) { toast(e.message, 6000); }
         },
-      }, 'Sync now')),
+      }, 'Sync now'),
+      h('button', {
+        class: 'secondary', onclick: async () => {
+          // Clears cached app files only — jobs/stubs (IndexedDB) are untouched.
+          try {
+            const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+            for (const r of regs) await r.unregister();
+            for (const k of await caches.keys()) await caches.delete(k);
+          } catch {}
+          location.reload();
+        },
+      }, `Force update (running ${APP_VERSION})`)),
   );
 }
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
