@@ -35,13 +35,6 @@ const fromRow = (cols, row) => {
 // ---------- Bootstrap (first connect) ----------
 export async function ensureCloudSetup() {
   const s = settings();
-  if (!s.folderId) {
-    let folder = await g.findByName('PayTrack', 'application/vnd.google-apps.folder');
-    if (!folder) folder = await g.createFolder('PayTrack');
-    let sub = await g.findByName('Paystubs', 'application/vnd.google-apps.folder', folder.id);
-    if (!sub) sub = await g.createFolder('Paystubs', folder.id);
-    saveSettings({ folderId: sub.id });
-  }
   if (!s.sheetId) {
     const existing = await g.findByName('PayTrack DB', 'application/vnd.google-apps.spreadsheet');
     if (existing) saveSettings({ sheetId: existing.id });

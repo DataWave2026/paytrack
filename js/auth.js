@@ -1,6 +1,6 @@
 // Google Identity Services (token model). Access tokens last ~1h; we refresh
 // silently when possible and surface a "reconnect" state otherwise.
-import { settings, SCOPES } from './config.js';
+import { settings, saveSettings, SCOPES } from './config.js';
 
 let tokenClient = null;
 let accessToken = '';
@@ -31,6 +31,7 @@ function requestToken(promptMode) {
       if (resp.error) return reject(new Error(resp.error_description || resp.error));
       accessToken = resp.access_token;
       expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+      saveSettings({ everConnected: true });
       emit('connected');
       resolve(accessToken);
     };

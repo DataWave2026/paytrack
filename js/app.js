@@ -296,7 +296,7 @@ async function stub() {
   return h('div', {},
     h('div', { class: 'card' },
       h('h2', {}, 'Scan a paystub'),
-      h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is archived in Drive, read with Google OCR, then matched to your jobs — you confirm everything before it counts.'),
+      h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'),
       h('label', {}, 'Take photo / choose file'),
       fileInput,
       stubFile ? h('img', { class: 'stub-preview', src: URL.createObjectURL(stubFile) }) : null,
@@ -310,16 +310,12 @@ async function stub() {
 
 async function runStubPipeline(file) {
   if (!auth.hasCredentials()) { toast('Connect Google in Setup first.'); return; }
-  const status = h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '⏳'), ' Uploading & reading stub…');
+  const status = h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), ' Reading stub…');
   viewEl.replaceChildren(status);
   try {
-    const name = `stub-${today()}-${file.name || 'photo.jpg'}`;
-    const [uploaded, text] = await Promise.all([
-      g.uploadFile(file, name, settings().folderId),
-      g.ocrImage(file),
-    ]);
+    const text = await g.ocrImage(file);   // temp OCR doc is deleted; photo is not stored
     const parsed = parseStub(text || '');
-    confirmStubForm(parsed, uploaded, text);
+    confirmStubForm(parsed, null, text);
   } catch (e) {
     toast(e.message, 6000);
     render('stub');
@@ -406,10 +402,18 @@ async function pickMatch(p, uploaded, ocrText) {
           };
         }
         if (markPaid) job.wages_status = 'paid';
+        // Backfill basics the job was missing, so the calendar event ends up
+        // with company etc. without dumping the whole stub into it.
+        if (!job.company && p.employer) job.company = p.employer;
+        if (!job.days_worked && p.day_count) job.days_worked = p.day_count;
+        if (markPaid && p.check_date) {
+          const line = `Paid ${p.check_date}${p.check_no ? `, check #${p.check_no}` : ''}${p.gross ? ` (gross ${fmt$(p.gross)})` : ''}`;
+          if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
+        }
         await store.putJob(job);
         const stubRec = {
           id: store.uid(),
-          drive_file_id: uploaded?.id || '', photo_name: uploaded?.name || '',
+          drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
@@ -562,8 +566,8 @@ async function settingsView() {
     h('div', { class: 'card' },
       h('h2', {}, 'Data'),
       h('p', { class: 'muted small' },
-        s.sheetId ? h('span', {}, 'Database: ', h('a', { href: `https://docs.google.com/spreadsheets/d/${s.sheetId}`, target: '_blank' }, 'PayTrack DB sheet'), ' in your Drive. Stub photos: PayTrack/Paystubs folder.')
-          : 'Connect Google to create the PayTrack DB sheet + Drive folder.'),
+        s.sheetId ? h('span', {}, 'Database: ', h('a', { href: `https://docs.google.com/spreadsheets/d/${s.sheetId}`, target: '_blank' }, 'PayTrack DB sheet'), ' in your Drive. Stub photos are never stored — only extracted details.')
+          : 'Connect Google to create the PayTrack DB sheet.'),
       h('button', {
         class: 'secondary', onclick: async () => {
           try { await sync.pullSheet(); await sync.pullCalendar(); await sync.mirrorSheet(); toast('Synced ✓'); }
@@ -582,7 +586,7 @@ function setConnDot(state) {
 auth.authBus.addEventListener('state', (e) => setConnDot(e.detail));
 
 async function backgroundSync() {
-  if (!auth.hasCredentials()) return;
+  if (!auth.hasCredentials() || !settings().everConnected) return;
   try {
     await auth.token();               // silent refresh if possible
     await sync.pullCalendar();

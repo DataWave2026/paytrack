@@ -3,14 +3,15 @@
 A personal PWA for tracking freelance film/TV jobs: work dates, day rates,
 gear-rental amounts, and whether wages and gear have been **paid**. Photograph
 a paystub in-app and PayTrack reads it (Google Drive OCR), matches it to the
-right job by name / dates / rates, and marks it paid. Two-way sync with a
-Google Calendar; unpaid jobs get "💰 Follow up" reminder events with email +
-push notifications from Google Calendar.
+right job by name / dates / rates, and marks it paid. The photo itself is
+never stored — only the extracted details. Two-way sync with a Google
+Calendar; unpaid jobs get "💰 Follow up" reminder events with email + push
+notifications from Google Calendar.
 
 **No backend.** Pure static PWA. All data lives in the owner's own Google
-account: a "PayTrack DB" Google Sheet, a `PayTrack/Paystubs` Drive folder for
-stub photos, and the chosen calendar. Works offline for viewing/adding jobs
-(IndexedDB), syncs when online. No LLM/model APIs anywhere.
+account: a "PayTrack DB" Google Sheet and the chosen calendar. Works offline
+for viewing/adding jobs (IndexedDB), syncs when online. No LLM/model APIs
+anywhere.
 
 ## One-time setup
 
