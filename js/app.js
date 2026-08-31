@@ -385,7 +385,7 @@ let stubFile = null;
 
 async function stub() {
   const fileInput = h('input', {
-    type: 'file', accept: 'image/*,application/pdf', capture: 'environment',
+    type: 'file', accept: 'image/*,.heic,.heif,.HEIC,.HEIF,application/pdf', capture: 'environment',
     onchange: (e) => {
       stubFile = e.target.files[0] || null;
       render('stub');
@@ -438,7 +438,9 @@ async function runStubPipeline(file) {
     const parsed = parseStub(text || '');
     confirmStubForm(parsed, null, text);
   } catch (e) {
-    toast(e.message, 6000);
+    toast(/400/.test(e.message)
+      ? 'Google couldn\'t read that file (format or size). Take the photo with the in-app camera, or use a JPEG/PNG.'
+      : e.message, 7000);
     render('stub');
   }
 }
@@ -706,7 +708,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
