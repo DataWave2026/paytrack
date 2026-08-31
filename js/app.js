@@ -828,6 +828,10 @@ async function settingsView() {
     calCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Profile'),
+      h('label', {}, 'Theme'),
+      segmented('theme', s.theme || '',
+        [['', 'Auto (device)'], ['dark', 'Dark'], ['light', 'Light']],
+        v => { saveSettings({ theme: v }); applyTheme(); }),
       h('label', {}, 'My loan-out company name (as it appears on stubs)'),
       h('input', {
         value: s.companyName, placeholder: 'auto-learned from company stubs',
@@ -870,8 +874,15 @@ async function settingsView() {
 }
 
 // ---------- boot ----------
+function applyTheme() {
+  const t = settings().theme;
+  if (t) document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+applyTheme();
+
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
@@ -925,3 +936,5 @@ document.addEventListener('visibilitychange', () => {
     navigator.serviceWorker?.getRegistration?.().then(r => r?.update()).catch(() => {});
   }
 });
+// Devices left open still pick up each other's changes.
+setInterval(backgroundSync, 5 * 60 * 1000);

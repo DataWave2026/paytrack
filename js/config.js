@@ -9,6 +9,7 @@ const DEFAULTS = {
   calendarId: '',            // Google calendar to sync with
   calendarName: '',
   sheetId: '',               // "PayTrack DB" spreadsheet
+  theme: '',                 // '' auto | 'dark' | 'light'
   companyName: '',           // user's loan-out company, for payee attribution
   personalName: '',          // user's own name as it appears on stubs
   alertDaysWages: 14,        // days after wrap before wages count as overdue
