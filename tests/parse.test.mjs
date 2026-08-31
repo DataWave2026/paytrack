@@ -242,6 +242,32 @@ $1,759.10`;
   assert.deepEqual(p.earnings[3], { type: 'OT X2.0', hours: 0.5, rate: 163.64, amount: 81.82 });
 });
 
+test('kit fee / box rental lines are recognized as gear payment', async () => {
+  const { gearOnStub } = await import('../js/parse.js');
+  const text = `WRAPBOOK
+Check Date
+Aug 25, 2026
+Earning Type
+Straight Time
+8.0 hours
+$81.82/hr Los Angeles, CA
+$654.55
+Kit Fee
+$250.00
+Box Rental
+$150.00
+Drive Rental
+$300.00
+Gross Earnings:
+$1,354.55`;
+  const p = parseStub(text);
+  const types = p.earnings.map(e => e.type.toLowerCase());
+  assert.ok(types.includes('kit fee'));
+  assert.ok(types.includes('box rental'));
+  assert.ok(types.includes('drive rental'));
+  assert.equal(gearOnStub(p.earnings), 700);
+});
+
 test('bare personal name on the stub means paid to me', () => {
   const text = `WRAPBOOK
 Check Date

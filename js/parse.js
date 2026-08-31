@@ -100,7 +100,15 @@ export function blankParse() {
   };
 }
 
-const EARN_TYPES = /\b(straight\s+time|overtime|ot\s*[x×]?\s*[12](?:[.,]\d)?|meal\s+penalt(?:y|ies)|holiday|vacation|sick|kit\s+rental|box\s+rental|equipment\s+rental|per\s+diem|mileage|night\s+premium|[67]th\s+day|rest\s+invasion|wardrobe|idle\s+day|travel|wrap|prep)\b/i;
+const EARN_TYPES = /\b(straight\s+time|overtime|ot\s*[x×]?\s*[12](?:[.,]\d)?|meal\s+penalt(?:y|ies)|holiday|vacation|sick|kit\s+(?:rental|fee)|box\s+(?:rental|fee)|[a-z]+\s+rental|per\s+diem|mileage|night\s+premium|[67]th\s+day|rest\s+invasion|wardrobe|idle\s+day|travel|wrap|prep)\b/i;
+
+// Gear money riding on a wage stub: Kit Fee, Box Rental, Equipment/Drive
+// Rental etc. Returns the summed amount of those earnings lines.
+export function gearOnStub(earnings) {
+  return (earnings || [])
+    .filter(e => /kit|box|equip|gear|rental/i.test(e.type || ''))
+    .reduce((s, e) => s + (e.amount || 0), 0);
+}
 
 // Catalog the earnings table: type, hours, rate, amount per line. Handles
 // row-per-line layouts AND column-style OCR (all types, then all hours, then
