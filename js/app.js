@@ -882,7 +882,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
@@ -901,6 +901,31 @@ document.getElementById('conn-status').addEventListener('click', async () => {
     backgroundSync();
   } catch (e) { toast(e.message, 6000); }
 });
+
+// One-time repair: jobs saved before payee attribution existed inherit it
+// from their matched stub (explicit paid_to, or a Loan Out classification).
+async function backfillPaidVia() {
+  try {
+    const jobs = await store.allJobs();
+    const stubs = await store.allStubs();
+    let changed = false;
+    for (const job of jobs) {
+      if (job.paid_via) continue;
+      const ss = stubs.filter(s => s.matched_job_id === job.id);
+      const hit = ss.find(s => s.paid_to)
+        || ss.find(s => /loan\s*-?\s*out/i.test(s.classification || ''));
+      if (hit) {
+        job.paid_via = hit.paid_to || 'company';
+        await store.putJob(job, { silent: true });
+        changed = true;
+      }
+    }
+    if (changed) {
+      store.notifyChanged();
+      if (auth.isConnected()) sync.scheduleMirror();
+    }
+  } catch (e) { console.warn('backfill', e); }
+}
 
 async function backgroundSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
@@ -929,6 +954,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 render('home');
+setTimeout(backfillPaidVia, 800);
 window.addEventListener('load', () => setTimeout(backgroundSync, 1500));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
