@@ -79,7 +79,8 @@ body {
   .earnrow input:first-child { grid-column: 1 / -1; }
   .stat .num { font-size: 1.15rem; }
   .stat .lbl { font-size: .62rem; }
-  table.tot { font-size: .78rem; }
+  /* Wide money tables scroll inside their card instead of squeezing */
+  table.tot { font-size: .78rem; display: block; overflow-x: auto; }
   .job { flex-wrap: wrap; }
   .badges { flex-direction: column; align-items: flex-end; gap: 4px; }
   .candidate .score { float: none; display: block; margin-bottom: 3px; }
@@ -94,8 +95,7 @@ body {
 
 .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .stat { flex: 1 1 90px; min-width: 0; }
-.stat .num { overflow-wrap: anywhere; }
-.stat .num { font-size: 1.5rem; font-weight: 700; }
+.stat .num { font-size: 1.5rem; font-weight: 700; white-space: nowrap; }
 .stat .lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .stat.bad .num { color: var(--bad); }
 .stat.ok .num { color: var(--accent); }
@@ -106,8 +106,8 @@ body {
 }
 .job:last-child { border-bottom: none; }
 .job > div:first-child { min-width: 0; }
-.job .title { font-weight: 600; overflow-wrap: anywhere; }
-.job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.job .title { font-weight: 600; overflow-wrap: break-word; }
+.job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; overflow-wrap: break-word; }
 .badges { display: flex; gap: 6px; flex-shrink: 0; }
 .badge { font-size: .65rem; padding: 3px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
 .badge.paid { background: rgba(76,195,138,.15); color: var(--accent); }
@@ -166,7 +166,7 @@ a { color: var(--accent); }
 }
 #toast.show { opacity: 1; }
 
-.candidate { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.candidate { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 8px; cursor: pointer; overflow-wrap: break-word; }
 .candidate.best { border-color: var(--accent); }
 .candidate .score { float: right; color: var(--muted); font-size: .75rem; }
 
@@ -177,7 +177,8 @@ a { color: var(--accent); }
 
 table.tot { width: 100%; border-collapse: collapse; font-size: .9rem; }
 table.tot th { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
-table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); overflow-wrap: break-word; }
+table.tot td:not(:first-child) { white-space: nowrap; }  /* never split dollar amounts */
 table.tot th:first-child, table.tot td:first-child { text-align: left; }
 table.tot tr.sum td { font-weight: 700; border-bottom: none; }
 .spinner { display: inline-block; animation: spin 1s linear infinite; }
