@@ -77,6 +77,93 @@ Paid by Check #1001262960 on Aug 25, 2026`;
   assert.equal(p.check_date, '2026-08-25');
 });
 
+test('real photographed-stub OCR order (giant label column, missing values)', () => {
+  // Structure mirrors an actual Vision/Drive OCR of a photographed Wrapbook
+  // stub: ALL labels first, then values, with stray lines interleaved and
+  // the "Loan Out" classification value missing entirely.
+  const text = `support@wrapbook.com
+1 (833) 977-2665
+W WRAPBOOK
+Check Date
+Name
+Address
+Classification
+Job Title
+Loan Out Company
+Controlling Employer
+Payroll Employer
+Project
+Work Period Start Date
+Work Period End Date
+Days Worked
+Earning Type
+Straight Time
+Straight Time
+OT ×1.5
+OT x2.0
+Meal Penalties
+Total Hours Worked
+Aug 25, 2026
+ExampleMedia LLC (Doe, Jane M.), XX-XXX
+123 Example St, Los Angeles, CA, 90000-1111
+Digital Imaging Tech
+ExampleMedia LLC, 123 Example St, Los Angeles, CA, 90000-1111
+FEIN#: XX-XXX
+Example Pictures, 1 Studio Way, Malibu, CA, 90265
+TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
+New York, NY, 10003-1502, FEIN#: 82-4462453
+Ritual
+Aug 16, 2026
+Aug 22, 2026
+2
+Time Worked
+8.0 hours
+5.0 hours
+4.0 hours
+0.5 hours
+Rate Work Location
+$81.82/hr Los Angeles, CA
+$90.00/hr Los Angeles, CA
+$122.73/hr Los Angeles, CA
+$163.64/hr Los Angeles, CA
+17.5
+Amount
+$654.55
+$450.00
+$490.91
+$81.82
+$81.82
+Gross Earnings:
+Total Deductions:
+Net Earnings:
+Amount
+$1,759.10
+$0.00
+$1,759.10
+Payments
+Primary Account:
+Paid by Check #1001262960 on Aug 25, 2026
+Amount
+$1,759.10`;
+  const p = parseStub(text);
+  assert.equal(p.vendor, 'Wrapbook');
+  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.payee, 'ExampleMedia LLC');
+  assert.equal(p.job_title, 'Digital Imaging Tech');
+  assert.equal(p.classification, 'Loan Out');   // inferred from loan-out company
+  assert.equal(p.employer, 'Example Pictures');
+  assert.equal(p.period_start, '2026-08-16');
+  assert.equal(p.period_end, '2026-08-22');
+  assert.equal(p.check_date, '2026-08-25');
+  assert.equal(p.day_count, 2);
+  assert.equal(p.gross, 1759.10);
+  assert.equal(p.earnings.length, 5);
+  assert.deepEqual(p.earnings[0], { type: 'Straight Time', hours: 8, rate: 81.82, amount: 654.55 });
+  assert.deepEqual(p.earnings[3], { type: 'OT x2.0', hours: 0.5, rate: 163.64, amount: 81.82 });
+  assert.equal(p.earnings[4].amount, 81.82);
+  assert.equal(p.earnings[4].hours, null);
+});
+
 test('generic parser survives an unknown vendor', () => {
   const text = `ACME PAYROLL SERVICES
 Pay Date: 09/04/2026
