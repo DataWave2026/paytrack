@@ -531,7 +531,9 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('h2', {}, 'Confirm stub details' + (p.vendor ? ` — ${p.vendor}` : '')),
     h('p', { class: 'muted small' }, 'OCR pre-filled what it could. Fix anything that looks wrong.'),
     h('label', {}, 'Project'), input('project_name'),
-    h('label', {}, 'Employer / production co'), input('employer'),
+    h('div', { class: 'row2' },
+      h('div', {}, h('label', {}, 'Employer / production co'), input('employer')),
+      h('div', {}, h('label', {}, 'Payroll company'), input('payroll_employer', { placeholder: 'e.g. TakeOne Network Corp.' }))),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Paid to'), (() => {
         // Dropdown of the two known payees, auto-selected from the scan.
@@ -673,6 +675,7 @@ async function pickMatch(p, uploaded, ocrText) {
           drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
+          payroll_employer: p.payroll_employer || '',
           paid_to: p.paid_to || '',
           job_title: p.job_title || '', earnings: p.earnings || [],
           period_start: p.period_start, period_end: p.period_end,
@@ -868,7 +871,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
