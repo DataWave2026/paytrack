@@ -10,7 +10,7 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
   'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
-  'payee', 'classification', 'job_title', 'period_start', 'period_end', 'hourly_rates', 'hours',
+  'payee', 'classification', 'job_title', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
   'created_at', 'updated_at'];
 
