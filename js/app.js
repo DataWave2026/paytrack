@@ -685,14 +685,25 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
   dot.className = state === 'connected' ? 'on' : (auth.hasCredentials() ? 'warn' : '');
-  dot.title = state === 'connected' ? 'Google connected' : 'Google not connected';
+  dot.title = state === 'connected' ? 'Google connected' : 'Google not connected — tap to reconnect';
 }
 auth.authBus.addEventListener('state', (e) => setConnDot(e.detail));
+setConnDot(auth.isConnected() ? 'connected' : 'disconnected');
+// One-tap reconnect: a real click is a user gesture, so the Google popup
+// is allowed here even when silent refresh was blocked.
+document.getElementById('conn-status').addEventListener('click', async () => {
+  if (auth.isConnected()) return toast('Google connected.');
+  try {
+    await auth.connect();
+    toast('Reconnected ✓');
+    backgroundSync();
+  } catch (e) { toast(e.message, 6000); }
+});
 
 async function backgroundSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;

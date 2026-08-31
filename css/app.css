@@ -35,7 +35,7 @@ body {
 }
 #topbar h1 { font-size: 1.1rem; letter-spacing: .04em; }
 #topbar #ver { font-size: .65rem; color: var(--muted); font-weight: 400; }
-#conn-status { color: var(--muted); font-size: .8rem; }
+#conn-status { color: var(--muted); font-size: .8rem; cursor: pointer; padding: 6px; }
 #conn-status.on { color: var(--accent); }
 #conn-status.warn { color: var(--warn); }
 

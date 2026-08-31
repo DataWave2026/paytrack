@@ -2,9 +2,20 @@
 // silently when possible and surface a "reconnect" state otherwise.
 import { settings, saveSettings, SCOPES } from './config.js';
 
+const TOKEN_KEY = 'paytrack.token';
 let tokenClient = null;
 let accessToken = '';
 let expiresAt = 0;
+
+// Restore a still-valid token across reloads (app updates auto-reload the
+// page; the connection must survive that).
+try {
+  const saved = JSON.parse(localStorage.getItem(TOKEN_KEY) || '{}');
+  if (saved.accessToken && saved.expiresAt > Date.now() + 60000) {
+    accessToken = saved.accessToken;
+    expiresAt = saved.expiresAt;
+  }
+} catch {}
 
 export const authBus = new EventTarget();
 const emit = (state) => authBus.dispatchEvent(new CustomEvent('state', { detail: state }));
@@ -31,6 +42,7 @@ function requestToken(promptMode) {
       if (resp.error) return reject(new Error(resp.error_description || resp.error));
       accessToken = resp.access_token;
       expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+      try { localStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken, expiresAt })); } catch {}
       saveSettings({ everConnected: true });
       emit('connected');
       resolve(accessToken);
@@ -51,7 +63,7 @@ export async function token() {
     return await requestToken('none');
   } catch {
     emit('disconnected');
-    const e = new Error('Google connection expired — tap Connect in Setup.');
+    const e = new Error('Google connection expired — tap the dot in the top bar to reconnect.');
     e.code = 'NEEDS_CONNECT';
     throw e;
   }
@@ -62,5 +74,6 @@ export function disconnect() {
     try { google.accounts.oauth2.revoke(accessToken, () => {}); } catch {}
   }
   accessToken = ''; expiresAt = 0;
+  try { localStorage.removeItem(TOKEN_KEY); } catch {}
   emit('disconnected');
 }
