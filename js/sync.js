@@ -301,6 +301,7 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     no_cal: !!item.no_cal,
     notes: item.description || '',
   };
+  store.calcGearTotal(job);
   await store.putJob(job);
   await store.dequeueImport(item.id);
   if (push) {

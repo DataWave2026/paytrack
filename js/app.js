@@ -79,11 +79,32 @@ store.bus.addEventListener('change', () => render());
 // ---------- home ----------
 async function home() {
   const jobs = await store.allJobs();
+  const stubs = await store.allStubs();
+  const stubsByJob = {};
+  for (const s of stubs) {
+    if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
+  }
   const unpaidWages = jobs.filter(j => j.wages_status !== 'paid');
   const unpaidGear = jobs.filter(j => j.gear_status !== 'paid' && j.gear_status !== 'na');
   const overdue = jobs.filter(isOverdue);
   const gearOut = unpaidGear.reduce((s, j) => s + (j.gear_total || 0), 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + (j.rate_amount ? j.rate_amount * jobDays(j) : 0), 0);
+
+  // Last three calendar months, oldest first (wages + gear combined).
+  const nowD = new Date();
+  const last3 = [2, 1, 0].map(k => {
+    const d = new Date(nowD.getFullYear(), nowD.getMonth() - k, 1);
+    const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let paid = 0, due = 0;
+    for (const j of jobs.filter(x => x.start_date?.startsWith(m))) {
+      const w = jobWages(j, stubsByJob);
+      if (w) { if (j.wages_status === 'paid') paid += w.amount; else due += w.amount; }
+      if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
+        if (j.gear_status === 'paid') paid += j.gear_total; else due += j.gear_total;
+      }
+    }
+    return { label: d.toLocaleString('en-US', { month: 'long' }), paid, due };
+  });
 
   return h('div', {},
     h('div', { class: 'card' },
@@ -99,6 +120,14 @@ async function home() {
           h('div', { class: 'num' }, wagesOut ? '~' + fmt$(wagesOut) : '—'),
           h('div', { class: 'lbl' }, 'est. wages owed'))),
     ),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Last 3 months'),
+      h('table', { class: 'tot' },
+        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Paid'), h('th', {}, 'Outstanding')),
+        last3.map(r => h('tr', {},
+          h('td', {}, r.label),
+          h('td', {}, r.paid ? fmt$(r.paid) : '—'),
+          h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—'))))),
     overdue.length ? h('div', { class: 'card' },
       h('h2', {}, 'Overdue'),
       overdue.map(jobRow)) : null,
@@ -156,22 +185,7 @@ function segmented(name, value, options, onChange) {
   return seg;
 }
 
-function spanDays(j) {
-  if (j.days_worked) return j.days_worked;
-  if (!j.start_date) return null;
-  return Math.max(1, Math.round((new Date(j.end_date || j.start_date) - new Date(j.start_date)) / 86400000) + 1);
-}
-
-function gearUnits(j) {
-  const d = spanDays(j);
-  if (!d) return null;
-  return j.gear_period === 'week' ? Math.ceil(d / 7) : d;
-}
-
-function calcGearTotal(j) {
-  const u = gearUnits(j);
-  if (j.gear_rate && !j.gear_total && u) j.gear_total = j.gear_rate * u;
-}
+const { gearUnits, calcGearTotal } = store;
 
 function addDaysStr(iso, n) {
   const d = new Date(iso + 'T00:00:00');
@@ -726,7 +740,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
