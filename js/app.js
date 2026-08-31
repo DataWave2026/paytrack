@@ -95,16 +95,22 @@ async function home() {
   const last3 = [2, 1, 0].map(k => {
     const d = new Date(nowD.getFullYear(), nowD.getMonth() - k, 1);
     const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    let paid = 0, due = 0;
+    let me = 0, co = 0, un = 0, due = 0;
+    const paidBucket = (j, amt) => {
+      if (j.paid_via === 'company') co += amt;
+      else if (j.paid_via === 'me') me += amt;
+      else un += amt;
+    };
     for (const j of jobs.filter(x => x.start_date?.startsWith(m))) {
       const w = jobWages(j, stubsByJob);
-      if (w) { if (j.wages_status === 'paid') paid += w.amount; else due += w.amount; }
+      if (w) { if (j.wages_status === 'paid') paidBucket(j, w.amount); else due += w.amount; }
       if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
-        if (j.gear_status === 'paid') paid += j.gear_total; else due += j.gear_total;
+        if (j.gear_status === 'paid') paidBucket(j, j.gear_total); else due += j.gear_total;
       }
     }
-    return { label: d.toLocaleString('en-US', { month: 'long' }), paid, due };
+    return { label: d.toLocaleString('en-US', { month: 'long' }), me, co, un, due };
   });
+  const unattributed = last3.reduce((s, r) => s + r.un, 0);
 
   return h('div', {},
     h('div', { class: 'card' },
@@ -123,11 +129,14 @@ async function home() {
     h('div', { class: 'card' },
       h('h2', {}, 'Last 3 months'),
       h('table', { class: 'tot' },
-        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Paid'), h('th', {}, 'Outstanding')),
+        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Paid to me'), h('th', {}, 'Paid to co.'), h('th', {}, 'Outstanding')),
         last3.map(r => h('tr', {},
           h('td', {}, r.label),
-          h('td', {}, r.paid ? fmt$(r.paid) : '—'),
-          h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—'))))),
+          h('td', {}, r.me ? fmt$(r.me) : '—'),
+          h('td', {}, r.co ? fmt$(r.co) : '—'),
+          h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—')))),
+      unattributed ? h('p', { class: 'muted small mt' },
+        `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     overdue.length ? h('div', { class: 'card' },
       h('h2', {}, 'Overdue'),
       overdue.map(jobRow)) : null,
@@ -248,6 +257,10 @@ function editJob(existing) {
     segmented('wages', job.wages_status,
       [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.wages_status = v),
+    h('label', {}, 'Paid to (me personally vs my company)'),
+    segmented('paidvia', job.paid_via || '',
+      [['', 'Not set'], ['me', 'Me'], ['company', 'My company']],
+      v => job.paid_via = v),
     h('div', { class: 'row2 mt' },
       h('div', {}, h('label', {}, 'Gear rate ($)'), input('gear_rate', { type: 'number', inputmode: 'decimal', placeholder: '1200' })),
       h('div', {}, h('label', {}, 'Rate is'), gearSeg)),
@@ -603,6 +616,15 @@ async function pickMatch(p, uploaded, ocrText) {
         // with company etc. without dumping the whole stub into it.
         if (!job.company && p.employer) job.company = p.employer;
         if (!job.days_worked && p.day_count) job.days_worked = p.day_count;
+        // Attribute the payment: Loan Out or a payee matching the user's
+        // company name means the check went to the company.
+        const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
+        if (/loan\s*-?\s*out/i.test(p.classification || '')) job.paid_via = 'company';
+        else if (p.payee) {
+          const comp = sq(settings().companyName);
+          job.paid_via = comp && (sq(p.payee).includes(comp) || comp.includes(sq(p.payee)))
+            ? 'company' : 'me';
+        }
         if (markPaid && p.check_date) {
           const extras = [p.gross ? `gross ${fmt$(p.gross)}` : '',
             p.hours ? `${p.hours} hrs` : '', p.day_count ? `${p.day_count} days` : '']
@@ -766,6 +788,13 @@ async function settingsView() {
       auth.isConnected() ? h('button', { class: 'secondary', onclick: () => { auth.disconnect(); render('settings'); } }, 'Disconnect') : null),
     calCard,
     h('div', { class: 'card' },
+      h('h2', {}, 'Profile'),
+      h('label', {}, 'My loan-out company name (helps attribute checks to you vs the company)'),
+      h('input', {
+        value: s.companyName, placeholder: 'e.g. 3038DigitalMedia',
+        onchange: (e) => saveSettings({ companyName: e.target.value.trim() }),
+      })),
+    h('div', { class: 'card' },
       h('h2', {}, 'Alerts'),
       h('div', { class: 'row2' },
         h('div', {}, h('label', {}, 'Wages overdue after (days past wrap)'), wagesAlertInput),
@@ -787,7 +816,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v22';
+const APP_VERSION = 'v23';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
