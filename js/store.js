@@ -58,7 +58,7 @@ export function blankJob() {
     rate_amount: null, rate_hours: null, rate_text: '', gear_rate: null,
     gear_period: 'day', gear_total: null, wages_status: 'unpaid', gear_status: 'na',
     expected_pay_date: '', calendar_event_id: '', reminder_event_id: '',
-    no_cal: false, notes: '', updated_at: now(), deleted: false,
+    gear_reminder_event_id: '', no_cal: false, notes: '', updated_at: now(), deleted: false,
   };
 }
 

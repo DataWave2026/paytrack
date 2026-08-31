@@ -139,5 +139,11 @@ a { color: var(--accent); }
 .candidate .score { float: right; color: var(--muted); font-size: .75rem; }
 
 .stub-preview { max-width: 100%; border-radius: 10px; margin-top: 10px; }
+
+table.tot { width: 100%; border-collapse: collapse; font-size: .9rem; }
+table.tot th { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+table.tot th:first-child, table.tot td:first-child { text-align: left; }
+table.tot tr.sum td { font-weight: 700; border-bottom: none; }
 .spinner { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

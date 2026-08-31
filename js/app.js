@@ -32,12 +32,18 @@ function toast(msg, ms = 3000) {
 }
 
 const fmt$ = (n) => n === null || n === undefined || Number.isNaN(n) ? '—'
-  : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  : '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
+    ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const today = () => new Date().toISOString().slice(0, 10);
 
 function fmtRange(a, b) {
   if (!a) return 'no dates';
-  const f = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const cy = String(new Date().getFullYear());
+  const f = (d) => {
+    const opts = { month: 'short', day: 'numeric' };
+    if (!d.startsWith(cy)) opts.year = 'numeric';   // old/future years shown explicitly
+    return new Date(d + 'T00:00:00').toLocaleDateString('en-US', opts);
+  };
   return !b || b === a ? f(a) : `${f(a)} – ${f(b)}`;
 }
 
@@ -54,7 +60,7 @@ function isOverdue(job) {
 
 // ---------- views ----------
 let currentView = 'home';
-const views = { home, jobs, stub, review, settings: settingsView };
+const views = { home, jobs, stub, totals, review, settings: settingsView };
 
 async function render(name) {
   currentView = name || currentView;
@@ -285,6 +291,93 @@ function editJob(existing) {
   );
   viewEl.replaceChildren(form);
   viewEl.scrollTop = 0;
+}
+
+// ---------- totals ----------
+let totalsYear = new Date().getFullYear();
+
+// Actual stub gross when paystubs are matched to the job; rate × days otherwise.
+function jobWages(job, stubsByJob) {
+  const grosses = (stubsByJob[job.id] || []).map(s => s.gross).filter(x => x !== null && x !== undefined);
+  if (grosses.length) return { amount: grosses.reduce((a, b) => a + b, 0), actual: true };
+  if (job.rate_amount) return { amount: job.rate_amount * jobDays(job), actual: false };
+  return null;
+}
+
+async function totals() {
+  const jobs = (await store.allJobs()).filter(j => j.start_date);
+  const stubs = await store.allStubs();
+  const stubsByJob = {};
+  for (const s of stubs) {
+    if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
+  }
+  const years = [...new Set(jobs.map(j => j.start_date.slice(0, 4)))].sort().reverse();
+  if (years.length && !years.includes(String(totalsYear))) totalsYear = Number(years[0]);
+
+  const months = {};
+  const acc = { wagesPaid: 0, wagesDue: 0, gearPaid: 0, gearDue: 0 };
+  let estimated = 0, noAmount = 0;
+  for (const j of jobs.filter(x => x.start_date.startsWith(String(totalsYear)))) {
+    const m = j.start_date.slice(0, 7);
+    const row = months[m] ||= { wages: 0, gear: 0 };
+    const w = jobWages(j, stubsByJob);
+    if (w) {
+      row.wages += w.amount;
+      if (!w.actual) estimated++;
+      if (j.wages_status === 'paid') acc.wagesPaid += w.amount; else acc.wagesDue += w.amount;
+    } else noAmount++;
+    if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
+      row.gear += j.gear_total;
+      if (j.gear_status === 'paid') acc.gearPaid += j.gear_total; else acc.gearDue += j.gear_total;
+    }
+  }
+  const monthKeys = Object.keys(months).sort();
+  const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'long' });
+  const yearSeg = h('div', { class: 'seg' },
+    years.map(y => h('button', {
+      class: String(totalsYear) === y ? 'sel' : '',
+      onclick: () => { totalsYear = Number(y); render('totals'); },
+    }, y)));
+
+  return h('div', {},
+    h('div', { class: 'card' },
+      h('h2', {}, 'Year'),
+      years.length ? yearSeg : h('p', { class: 'muted' }, 'No dated jobs yet.')),
+    h('div', { class: 'card' },
+      h('h2', {}, `${totalsYear} totals`),
+      h('div', { class: 'stat-row' },
+        h('div', { class: 'stat ok' },
+          h('div', { class: 'num' }, fmt$(acc.wagesPaid)),
+          h('div', { class: 'lbl' }, 'wages paid')),
+        h('div', { class: 'stat ok' },
+          h('div', { class: 'num' }, fmt$(acc.gearPaid)),
+          h('div', { class: 'lbl' }, 'gear paid'))),
+      h('div', { class: 'stat-row mt' },
+        h('div', { class: 'stat ' + (acc.wagesDue ? 'bad' : '') },
+          h('div', { class: 'num' }, fmt$(acc.wagesDue)),
+          h('div', { class: 'lbl' }, 'wages still owed')),
+        h('div', { class: 'stat ' + (acc.gearDue ? 'bad' : '') },
+          h('div', { class: 'num' }, fmt$(acc.gearDue)),
+          h('div', { class: 'lbl' }, 'gear still owed')))),
+    h('div', { class: 'card' },
+      h('h2', {}, 'By month'),
+      monthKeys.length ? h('table', { class: 'tot' },
+        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Wages'), h('th', {}, 'Gear'), h('th', {}, 'Total')),
+        monthKeys.map(m => h('tr', {},
+          h('td', {}, monthName(m)),
+          h('td', {}, months[m].wages ? fmt$(months[m].wages) : '—'),
+          h('td', {}, months[m].gear ? fmt$(months[m].gear) : '—'),
+          h('td', {}, (months[m].wages + months[m].gear) ? fmt$(months[m].wages + months[m].gear) : '—'))),
+        h('tr', { class: 'sum' },
+          h('td', {}, 'Year'),
+          h('td', {}, fmt$(acc.wagesPaid + acc.wagesDue)),
+          h('td', {}, fmt$(acc.gearPaid + acc.gearDue)),
+          h('td', {}, fmt$(acc.wagesPaid + acc.wagesDue + acc.gearPaid + acc.gearDue))))
+        : h('p', { class: 'muted' }, 'Nothing recorded for this year.'),
+      (estimated || noAmount) ? h('p', { class: 'muted small mt' },
+        [estimated ? `${estimated} job${estimated === 1 ? '' : 's'} counted at rate × days (no stub matched yet).` : '',
+          noAmount ? `${noAmount} job${noAmount === 1 ? '' : 's'} with no amounts not included.` : ''].filter(Boolean).join(' ')) : null),
+  );
 }
 
 // ---------- paystub ----------
@@ -575,7 +668,7 @@ async function settingsView() {
       h('div', { class: 'row2' },
         h('div', {}, h('label', {}, 'Wages overdue after (days past wrap)'), wagesAlertInput),
         h('div', {}, h('label', {}, 'Gear overdue after (days past wrap)'), gearAlertInput)),
-      h('p', { class: 'muted small mt' }, 'Unpaid jobs get a "Follow up" calendar event at the earlier of those dates, with an email + notification from Google Calendar. Marking the job paid removes it. A job\'s "expect payment by" date overrides both timers.')),
+      h('p', { class: 'muted small mt' }, 'Wages and gear each get their own "Follow up" calendar event on their own timer, with an email + notification from Google Calendar. Marking a part paid removes its reminder. A job\'s "expect payment by" date overrides both timers.')),
     h('div', { class: 'card' },
       h('h2', {}, 'Data'),
       h('p', { class: 'muted small' },
