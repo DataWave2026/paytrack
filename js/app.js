@@ -393,9 +393,9 @@ async function stub() {
   const cameraInput = h('input', {
     type: 'file', accept: 'image/*', capture: 'environment', onchange: onPick,
   });
-  const libraryInput = h('input', {
-    type: 'file', accept: 'image/*,.heic,.heif,.HEIC,.HEIF,application/pdf', onchange: onPick,
-  });
+  // No accept filter: some pickers grey out HEIC/etc. no matter what the
+  // filter says — let anything be chosen and validate after.
+  const libraryInput = h('input', { type: 'file', onchange: onPick });
   const connected = auth.isConnected() || auth.hasCredentials();
 
   return h('div', {},
@@ -715,7 +715,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
