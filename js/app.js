@@ -150,7 +150,8 @@ function jobRow(job) {
   return h('div', { class: 'job', onclick: () => render('jobs').then(() => editJob(job)) },
     h('div', {},
       h('div', { class: 'title' }, job.project || '(untitled)'),
-      h('div', { class: 'sub' }, [fmtRange(job.start_date, job.end_date), rate,
+      h('div', { class: 'sub' }, [fmtRange(job.start_date, job.end_date),
+        job.days_worked ? `${job.days_worked} day${job.days_worked === 1 ? '' : 's'}` : '', rate,
         job.gear_total ? `gear ${fmt$(job.gear_total)}` : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'badges' },
       statusBadge('wages', job.wages_status),
@@ -496,6 +497,9 @@ function confirmStubForm(parsed, uploaded, ocrText) {
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
     h('div', { class: 'row2' },
+      h('div', {}, h('label', {}, 'Days worked'), input('day_count', { type: 'number', inputmode: 'numeric' })),
+      h('div', {}, h('label', {}, 'Total hours'), input('hours', { type: 'number', inputmode: 'decimal' }))),
+    h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Gross ($)'), input('gross', { type: 'number', inputmode: 'decimal' })),
       h('div', {}, h('label', {}, 'Net ($)'), input('net', { type: 'number', inputmode: 'decimal' }))),
     h('div', { class: 'row2' },
@@ -562,7 +566,10 @@ async function pickMatch(p, uploaded, ocrText) {
         if (!job.company && p.employer) job.company = p.employer;
         if (!job.days_worked && p.day_count) job.days_worked = p.day_count;
         if (markPaid && p.check_date) {
-          const line = `Paid ${p.check_date}${p.check_no ? `, check #${p.check_no}` : ''}${p.gross ? ` (gross ${fmt$(p.gross)})` : ''}`;
+          const extras = [p.gross ? `gross ${fmt$(p.gross)}` : '',
+            p.hours ? `${p.hours} hrs` : '', p.day_count ? `${p.day_count} days` : '']
+            .filter(Boolean).join(' · ');
+          const line = `Paid ${p.check_date}${p.check_no ? `, check #${p.check_no}` : ''}${extras ? ` (${extras})` : ''}`;
           if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
         }
         await store.putJob(job);
@@ -740,7 +747,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
