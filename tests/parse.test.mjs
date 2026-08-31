@@ -27,6 +27,15 @@ test('wrapbook stub parses', () => {
   assert.equal(p.day_count, 2);
   assert.ok(p.hourly_rates.includes(81.82) && p.hourly_rates.includes(90));
   assert.match(p.employer, /Example Pictures/);
+  assert.equal(p.payee, 'ExampleMedia LLC');
+  assert.equal(p.classification, 'Loan Out');
+  assert.equal(p.earnings.length, 5);
+  assert.deepEqual(p.earnings[0], { type: 'Straight Time', hours: 8, rate: 81.82, amount: 654.55 });
+  assert.deepEqual(p.earnings[2], { type: 'OT x1.5', hours: 4, rate: 122.73, amount: 490.91 });
+  const mp = p.earnings[4];
+  assert.match(mp.type, /Meal Penalt/i);
+  assert.equal(mp.hours, null);
+  assert.equal(mp.amount, 81.82);
 });
 
 test('column-style OCR (label block then value block) pairs correctly', () => {

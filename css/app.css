@@ -142,6 +142,9 @@ a { color: var(--accent); }
 
 .stub-preview { max-width: 100%; border-radius: 10px; margin-top: 10px; }
 
+.earnrow { display: grid; grid-template-columns: 2fr 1fr 1.1fr 1.2fr auto; gap: 6px; margin-bottom: 6px; }
+.earnrow input { padding: 8px; font-size: .85rem; }
+
 table.tot { width: 100%; border-collapse: collapse; font-size: .9rem; }
 table.tot th { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
 table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); }
