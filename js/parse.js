@@ -143,14 +143,21 @@ export function parseStub(text) {
 // e.g. "$955/10 paid, $1200/gear paid" / "Scale paid, $1000/gear not yet paid"
 export function parseJobNote(note) {
   const out = { rate_amount: null, rate_hours: null, rate_text: '', gear_total: null,
-    wages_status: null, gear_status: null };
+    gear_rate: null, wages_status: null, gear_status: null };
   if (!note) return out;
 
-  const gear = note.match(/\$?\s?([\d,]+(?:\.\d{2})?)\s*\/?\s*gear([^,;.]*)/i);
+  // "$1200/gear paid", "$1250/day gear not yet paid", "gear not yet paid"
+  const gear = note.match(/\$?\s?([\d,]+(?:\.\d{2})?)\s*(\/\s*(?:day|wk|week))?\s*(?:\/|for)?\s*\bgear\b([^,;.]*)/i);
   if (gear) {
-    out.gear_total = parseMoney(gear[1]);
-    out.gear_status = /not\s+yet|unpaid|pending|waiting/i.test(gear[2]) ? 'unpaid'
-      : /paid/i.test(gear[2]) ? 'paid' : 'unpaid';
+    if (gear[2]) out.gear_rate = parseMoney(gear[1]);
+    else out.gear_total = parseMoney(gear[1]);
+    out.gear_status = /not\s+yet|unpaid|pending|waiting/i.test(gear[3]) ? 'unpaid'
+      : /paid/i.test(gear[3]) ? 'paid' : 'unpaid';
+  } else {
+    const bare = note.match(/\bgear\b([^,;.]*)/i);
+    if (bare && /paid|not\s+yet|unpaid/i.test(bare[1])) {
+      out.gear_status = /not\s+yet|unpaid/i.test(bare[1]) ? 'unpaid' : 'paid';
+    }
   }
   const noteNoGear = gear ? note.replace(gear[0], '') : note;
 
@@ -166,10 +173,20 @@ export function parseJobNote(note) {
     const wages = noteNoGear.match(/scale([^,;.]*)/i);
     out.wages_status = wages && /not\s+yet|unpaid|pending|waiting/i.test(wages[1]) ? 'unpaid'
       : wages && /paid/i.test(wages[1]) ? 'paid' : 'unpaid';
-  } else if (/wages?\s+paid/i.test(noteNoGear)) {
-    out.wages_status = 'paid';
-  } else if (/not\s+yet\s+paid|unpaid/i.test(noteNoGear)) {
-    out.wages_status = 'unpaid';
+  } else {
+    // "$87/hr 8 hr guar. paid", "$1000/day?" — hourly/daily styles
+    const alt = noteNoGear.match(/\$\s?([\d,]+(?:\.\d{2})?)\s*\/\s*(hr|hour|day)\b([^,;.]*)/i);
+    if (alt) {
+      out.rate_text = `$${alt[1]}/${alt[2].toLowerCase()}`;
+      if (/day/i.test(alt[2])) out.rate_amount = parseMoney(alt[1]);
+      out.wages_status = /not\s+yet|unpaid|pending|waiting/i.test(alt[3]) ? 'unpaid'
+        : /paid/i.test(alt[3]) ? 'paid' : null;
+    }
+    if (!out.wages_status) {
+      if (/wages?\s+paid/i.test(noteNoGear)) out.wages_status = 'paid';
+      else if (/not\s+yet\s+paid|unpaid/i.test(noteNoGear)) out.wages_status = 'unpaid';
+      else if (/\bpaid\b/i.test(noteNoGear)) out.wages_status = 'paid';
+    }
   }
   return out;
 }
@@ -178,9 +195,11 @@ export function parseJobNote(note) {
 export function looksLikeJob(summary, description) {
   const s = `${summary || ''} ${description || ''}`;
   return /\$\s?\d{2,4}(?:\.\d{2})?\s*\/\s*\d{1,2}\b/.test(s)   // $955/10
+    || /\$\s?\d{2,5}\s*\/\s*(day|wk|week|hr|hour)/i.test(s)    // $1000/day, $87/hr
     || /\/\s?gear|gear\s+(paid|rental|not)/i.test(s)
     || /\bscale\s+(paid|not)/i.test(s)
-    || /\bwages?\s+(paid|not|unpaid)/i.test(s);
+    || /\bwages?\s+(paid|not|unpaid)/i.test(s)
+    || /\b(wrap|shoot)\s+day\s+paid\b/i.test(s);
 }
 
 // Render a job back into the user's readable note style.

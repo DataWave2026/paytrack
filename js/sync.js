@@ -7,7 +7,7 @@ import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked', 'rate_amount',
   'rate_hours', 'rate_text', 'gear_rate', 'gear_total', 'wages_status', 'gear_status',
-  'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'notes', 'updated_at', 'deleted'];
+  'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'period_start', 'period_end', 'hourly_rates', 'hours', 'gross', 'net', 'check_no',
   'check_date', 'matched_job_id', 'created_at', 'updated_at'];
@@ -25,7 +25,7 @@ const fromRow = (cols, row) => {
     let v = row[i] ?? '';
     if (['days_worked', 'rate_amount', 'rate_hours', 'gear_rate', 'gear_total', 'hours', 'gross', 'net'].includes(c)) {
       v = v === '' ? null : parseFloat(v);
-    } else if (c === 'deleted') v = v === 'true';
+    } else if (c === 'deleted' || c === 'no_cal') v = v === 'true';
     else if (c === 'hourly_rates') v = v ? v.split('|').map(Number) : [];
     rec[c] = v;
   });
@@ -100,7 +100,9 @@ function addDays(iso, n) {
 
 export async function pushJobToCalendar(job) {
   const s = settings();
-  if (!s.calendarId || !job.start_date) return job;
+  // no_cal jobs (imported from the iCloud calendar) stay off the Google
+  // calendar — their original event already exists in Apple Calendar.
+  if (job.no_cal || !s.calendarId || !job.start_date) return job;
   const event = {
     summary: job.project + (job.company ? ` (${job.company})` : ''),
     description: jobToNote(job) + (job.notes ? `\n${job.notes}` : ''),
@@ -146,8 +148,11 @@ export async function syncReminder(job) {
     }
     return job;
   }
-  const due = job.expected_pay_date
+  let due = job.expected_pay_date
     || addDays(job.end_date || job.start_date, Number(s.alertDays) || 14);
+  // A due date in the past would never notify — nudge it to tomorrow.
+  const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
+  if (due < tomorrow) due = tomorrow;
   const event = {
     summary: `💰 Follow up: ${job.project || 'job'} ${parts.join(' + ')} unpaid`,
     description: `PayTrack alert — ${jobToNote(job)}`,
@@ -189,7 +194,7 @@ export async function pushUnsynced() {
   if (!s.calendarId) return;
   const jobs = await store.allJobs();
   for (const job of jobs) {
-    if (!job.calendar_event_id && job.start_date) {
+    if (!job.no_cal && !job.calendar_event_id && job.start_date) {
       await pushJob(job).catch(e => console.warn('catch-up push', e));
     }
   }
@@ -274,19 +279,22 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     end_date: item.end || item.start || '',
     rate_amount: note.rate_amount, rate_hours: note.rate_hours,
     rate_text: note.rate_text,
-    gear_total: note.gear_total,
+    gear_total: note.gear_total, gear_rate: note.gear_rate,
     wages_status: note.wages_status || 'unpaid',
-    gear_status: note.gear_status || (note.gear_total ? 'unpaid' : 'na'),
-    calendar_event_id: item.id,
+    gear_status: note.gear_status || (note.gear_total || note.gear_rate ? 'unpaid' : 'na'),
+    calendar_event_id: item.no_cal ? '' : item.id,
+    no_cal: !!item.no_cal,
     notes: item.description || '',
   };
   await store.putJob(job);
   await store.dequeueImport(item.id);
   if (push) {
-    // Tag the existing event so future edits round-trip; keep user's text.
     const s = settings();
-    await g.patchEvent(s.calendarId, item.id,
-      { extendedProperties: { private: { paytrackJobId: job.id } } }).catch(() => {});
+    if (!job.no_cal) {
+      // Tag the existing event so future edits round-trip; keep user's text.
+      await g.patchEvent(s.calendarId, item.id,
+        { extendedProperties: { private: { paytrackJobId: job.id } } }).catch(() => {});
+    }
     await syncReminder(job).catch(() => {});
     await store.putJob(job, { silent: true });
     scheduleMirror();

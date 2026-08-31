@@ -159,16 +159,40 @@ function segmented(name, value, options, onChange) {
   return seg;
 }
 
+function addDaysStr(iso, n) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 function editJob(existing) {
   const job = existing ? { ...existing } : store.blankJob();
+  let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
     value: job[key] ?? '', ...attrs,
     oninput: (e) => {
       job[key] = attrs.type === 'number'
         ? (e.target.value === '' ? null : parseFloat(e.target.value))
         : e.target.value;
+      if (['gear_rate', 'days_worked', 'start_date', 'end_date'].includes(key)) gearHintUpdate();
     },
   });
+
+  const hoursInput = input('rate_hours', { type: 'number', inputmode: 'numeric', placeholder: 'other' });
+  const hoursSeg = segmented('hours', String(job.rate_hours || ''),
+    [['10', '10 hr'], ['12', '12 hr']],
+    v => { job.rate_hours = parseInt(v, 10); hoursInput.value = v; });
+
+  const gearHint = h('p', { class: 'muted small' }, '');
+  const gearDays = () => job.days_worked
+    || (job.start_date ? Math.max(1, Math.round((new Date(job.end_date || job.start_date) - new Date(job.start_date)) / 86400000) + 1) : null);
+  const gearHintUpdate = () => {
+    const d = gearDays();
+    gearHint.textContent = job.gear_rate && d
+      ? `= ${fmt$(job.gear_rate * d)} gear total for ${d} day${d === 1 ? '' : 's'} (auto-filled on save if total left blank)`
+      : '';
+  };
+  gearHintUpdate();
 
   const form = h('div', { class: 'card' },
     h('h2', {}, existing ? 'Edit job' : 'New job'),
@@ -179,17 +203,25 @@ function editJob(existing) {
       h('div', {}, h('label', {}, 'Last day'), input('end_date', { type: 'date' }))),
     h('label', {}, 'Days actually worked (optional — for owed-wages estimate)'),
     input('days_worked', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 2' }),
-    h('div', { class: 'row2' },
-      h('div', {}, h('label', {}, 'Day rate ($)'), input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' })),
-      h('div', {}, h('label', {}, 'Guaranteed hours'), input('rate_hours', { type: 'number', inputmode: 'numeric', placeholder: '10' }))),
-    h('label', {}, 'Rate note (if not $/hours — e.g. "scale")'), input('rate_text', { placeholder: 'scale' }),
+    existing ? null : h('div', {},
+      h('label', {}, 'Weeks (multi-week job: creates Week 1, Week 2, … entries, each tracked separately)'),
+      h('input', {
+        type: 'number', inputmode: 'numeric', value: '1', min: '1', max: '26',
+        oninput: (e) => weeks = Math.max(1, parseInt(e.target.value, 10) || 1),
+      })),
+    h('label', {}, 'Wages / day ($)'),
+    input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' }),
+    h('label', {}, 'Guaranteed hours'),
+    h('div', { class: 'row2' }, h('div', {}, hoursSeg), h('div', {}, hoursInput)),
+    h('label', {}, 'Rate note (if not day rate — e.g. "scale", "$87/hr")'), input('rate_text', { placeholder: 'scale' }),
     h('label', {}, 'Wages'),
     segmented('wages', job.wages_status,
       [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.wages_status = v),
     h('div', { class: 'row2 mt' },
-      h('div', {}, h('label', {}, 'Gear rental total ($)'), input('gear_total', { type: 'number', inputmode: 'decimal', placeholder: '1200' })),
-      h('div', {}, h('label', {}, 'Gear $/day (optional)'), input('gear_rate', { type: 'number', inputmode: 'decimal' }))),
+      h('div', {}, h('label', {}, 'Gear / day ($)'), input('gear_rate', { type: 'number', inputmode: 'decimal', placeholder: '1200' })),
+      h('div', {}, h('label', {}, 'Gear total ($, or leave blank)'), input('gear_total', { type: 'number', inputmode: 'decimal' }))),
+    gearHint,
     h('label', {}, 'Gear payment'),
     segmented('gear', job.gear_status,
       [['na', 'No gear'], ['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
@@ -203,9 +235,33 @@ function editJob(existing) {
       class: 'primary', onclick: async () => {
         if (!job.project && !job.notes) return toast('Give the job at least a name.');
         if (job.end_date && job.start_date && job.end_date < job.start_date) job.end_date = job.start_date;
-        await store.putJob(job);
-        toast('Saved.');
-        if (auth.isConnected()) sync.pushJob(job).catch(e => toast('Calendar sync: ' + e.message, 5000));
+        if (weeks > 1 && !job.start_date) return toast('Multi-week jobs need a first day (of week 1).');
+        if (job.gear_status === 'na' && (job.gear_rate || job.gear_total)) job.gear_status = 'unpaid';
+
+        const toSave = [];
+        if (!existing && weeks > 1) {
+          for (let k = 0; k < weeks; k++) {
+            toSave.push({
+              ...job,
+              id: k === 0 ? job.id : store.uid(),
+              project: `${job.project} (Week ${k + 1})`,
+              start_date: addDaysStr(job.start_date, 7 * k),
+              end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
+            });
+          }
+        } else {
+          toSave.push(job);
+        }
+        for (const j of toSave) {
+          if (j.gear_rate && !j.gear_total) {
+            const d = j.days_worked
+              || Math.max(1, Math.round((new Date(j.end_date || j.start_date) - new Date(j.start_date)) / 86400000) + 1);
+            if (j.start_date) j.gear_total = j.gear_rate * d;
+          }
+          await store.putJob(j);
+          if (auth.isConnected()) sync.pushJob(j).catch(e => toast('Calendar sync: ' + e.message, 5000));
+        }
+        toast(toSave.length > 1 ? `Saved ${toSave.length} weekly entries.` : 'Saved.');
         render('jobs');
       },
     }, 'Save job'),
@@ -388,9 +444,45 @@ async function review() {
             render('review');
           } catch (e) { toast(e.message, 6000); }
         },
-      }, 'Scan calendar history')),
+      }, 'Scan calendar history'),
+      h('label', {}, 'Or import an events file (.json)'),
+      h('input', {
+        type: 'file', accept: '.json,application/json',
+        onchange: async (e) => {
+          const f = e.target.files[0];
+          if (!f) return;
+          try {
+            const items = JSON.parse(await f.text());
+            if (!Array.isArray(items)) throw new Error('File must contain a JSON array.');
+            let n = 0;
+            for (const it of items) {
+              if (!it || !it.summary || !it.start) continue;
+              await store.queueImport({
+                id: String(it.id || store.uid()), summary: String(it.summary),
+                description: String(it.description || ''),
+                start: String(it.start), end: String(it.end || it.start),
+                no_cal: !!it.no_cal,
+              });
+              n++;
+            }
+            toast(`Queued ${n} event${n === 1 ? '' : 's'} for review.`);
+          } catch (err) { toast('Import failed: ' + err.message, 6000); }
+        },
+      })),
     queued.length ? h('div', { class: 'card' },
       h('h2', {}, `To review (${queued.length})`),
+      h('button', {
+        class: 'primary', onclick: async () => {
+          const items = await store.allQueued();
+          let n = 0;
+          for (const item of items) {
+            try { await sync.importQueuedAsJob(item, { push: auth.isConnected() }); n++; }
+            catch (e) { console.warn('import', e); }
+          }
+          toast(`Imported ${n} job${n === 1 ? '' : 's'}.`);
+          render('jobs');
+        },
+      }, `Import all ${queued.length} as jobs`),
       queued.map(item => h('div', { class: 'candidate' },
         h('div', { class: 'title' }, item.summary),
         h('div', { class: 'sub muted small' }, [fmtRange(item.start, item.end), item.description].filter(Boolean).join(' · ')),

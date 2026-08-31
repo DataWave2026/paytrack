@@ -63,11 +63,43 @@ test('calendar note convention round-trips', () => {
   assert.equal(n.wages_status, 'paid');
 });
 
+test('real-world note variants from the iCloud calendar', () => {
+  let n = parseJobNote('$950/10 not yet paid, $1250/day gear not yet paid');
+  assert.equal(n.rate_amount, 950);
+  assert.equal(n.gear_rate, 1250);
+  assert.equal(n.gear_total, null);
+  assert.equal(n.gear_status, 'unpaid');
+
+  n = parseJobNote('WAGES PAID, GEAR NOT YET PAID');
+  assert.equal(n.wages_status, 'paid');
+  assert.equal(n.gear_status, 'unpaid');
+
+  n = parseJobNote('$87/hr 8 hr guar. paid, $650/gear paid');
+  assert.equal(n.rate_text, '$87/hr');
+  assert.equal(n.wages_status, 'paid');
+  assert.equal(n.gear_total, 650);
+  assert.equal(n.gear_status, 'paid');
+
+  n = parseJobNote('Wrap day paid');
+  assert.equal(n.wages_status, 'paid');
+
+  n = parseJobNote('$1000/day?');
+  assert.equal(n.rate_amount, 1000);
+  assert.equal(n.wages_status, null);
+
+  n = parseJobNote('Week 2 wages paid, gear not yet paid');
+  assert.equal(n.wages_status, 'paid');
+  assert.equal(n.gear_status, 'unpaid');
+});
+
 test('job-like event detection', () => {
   assert.ok(looksLikeJob('Solace with Mike G', '$955/10 paid, $1200/gear paid'));
   assert.ok(looksLikeJob('Hold for Batch', 'Wages paid'));
   assert.ok(looksLikeJob('cover for Matt', 'Scale paid, $1000/gear not yet paid'));
+  assert.ok(looksLikeJob('Hold for data job', '$1000/day?'));
+  assert.ok(looksLikeJob('Schooled WRAP', 'Wrap day paid'));
   assert.ok(!looksLikeJob('Judy duty', ''));
+  assert.ok(!looksLikeJob('Amex Lululemon $75 quarterly purchase', ''));
   assert.ok(!looksLikeJob('Flight: DL 2929 from AUS to LAX', 'Confirmation Code: 75W6SJ'));
   assert.ok(!looksLikeJob('PAY CC BILLS', ''));
 });
