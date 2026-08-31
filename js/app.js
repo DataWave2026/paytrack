@@ -532,6 +532,13 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('label', {}, 'Hourly rates seen (comma-separated)'), input('hourly_rates', { placeholder: '81.82, 90' }),
     h('label', {}, 'Earnings breakdown (kept with the stub record)'),
     earnBox,
+    ocrText ? h('details', { class: 'mt' },
+      h('summary', { class: 'muted small', style: 'cursor:pointer' }, 'Raw OCR text (for troubleshooting a wrong field)'),
+      h('textarea', { readonly: 'readonly', style: 'min-height:140px;font-size:.75rem;margin-top:8px' }, ocrText),
+      h('button', {
+        class: 'inline secondary', type: 'button', style: 'margin-top:8px',
+        onclick: () => navigator.clipboard?.writeText(ocrText).then(() => toast('Raw OCR text copied.')),
+      }, 'Copy raw text')) : null,
     h('button', { class: 'primary', onclick: () => pickMatch(p, uploaded, ocrText) }, 'Find matching job →'),
     h('button', { class: 'secondary', onclick: () => render('stub') }, 'Cancel'),
   ));
@@ -775,7 +782,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');

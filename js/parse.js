@@ -240,7 +240,9 @@ function parseWrapbook(text) {
 
   const companyAddr = (l) => {
     if (isStandaloneDate(l) || parseDate(l.slice(0, 20)) || /\bcheck\b|paid\s+by/i.test(l)) return null;
-    return l.match(/^([A-Za-z][^,]{1,45}?),\s*\d/);
+    // Company then address. "3038DigitalMedia, 422 …" counts (digits glued to
+    // letters); "422 Avenue 64, …" is a street address and doesn't.
+    return l.match(/^((?:\d+[A-Za-z]|[A-Za-z])[^,]{0,45}?),\s*\d/);
   };
   const squash = (s) => (s || '').replace(/\s/g, '').toLowerCase();
 
@@ -270,7 +272,9 @@ function parseWrapbook(text) {
     const ca = companyAddr(l);
     if (!ca) continue;
     if (/wrapbook|payroll|\bdba\b/i.test(l)) continue;
-    if (squash(ca[1]) === squash(p.payee)) continue;
+    // Never pick the payee's own (loan-out) company, even on a partial match.
+    const a = squash(ca[1]), b = squash(p.payee);
+    if (b && (a.includes(b) || b.includes(a))) continue;
     p.employer = ca[1].trim();
     break;
   }
