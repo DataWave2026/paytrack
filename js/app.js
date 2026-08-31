@@ -684,6 +684,9 @@ async function settingsView() {
 }
 
 // ---------- boot ----------
+// Keep in sync with the CACHE version in sw.js on every release.
+const APP_VERSION = 'v9';
+document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
   dot.className = state === 'connected' ? 'on' : (auth.hasCredentials() ? 'warn' : '');
@@ -703,9 +706,25 @@ async function backgroundSync() {
   }
 }
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // When an UPDATED service worker takes control, reload once so the page
+  // immediately runs the new version instead of the stale cached one. The
+  // hadController check keeps the very first visit from reloading.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadedForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloadedForUpdate) {
+      reloadedForUpdate = true;
+      location.reload();
+    }
+  });
+}
 render('home');
 window.addEventListener('load', () => setTimeout(backgroundSync, 1500));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') backgroundSync();
+  if (document.visibilityState === 'visible') {
+    backgroundSync();
+    navigator.serviceWorker?.getRegistration?.().then(r => r?.update()).catch(() => {});
+  }
 });
