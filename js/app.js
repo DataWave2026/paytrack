@@ -772,8 +772,14 @@ async function pickMatch(p, uploaded, ocrText) {
           if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
         }
         await store.putJob(job);
+        // The same check scanned again UPDATES its existing record — a check
+        // number can only ever be recorded once.
+        const existingStub = p.check_no && String(p.check_no).length >= 4
+          ? (await store.allStubs()).find(s => s.check_no === p.check_no)
+          : null;
         const stubRec = {
-          id: store.uid(),
+          id: existingStub ? existingStub.id : store.uid(),
+          created_at: existingStub?.created_at,
           drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
@@ -788,7 +794,9 @@ async function pickMatch(p, uploaded, ocrText) {
         };
         await store.putStub(stubRec);
         if (auth.isConnected()) sync.pushJob(job).catch(e => toast('Sync: ' + e.message, 5000));
-        toast(markPaid ? `Stub filed — ${job.project} wages marked paid ✓` : 'Stub filed.');
+        toast(existingStub
+          ? `Check #${p.check_no} was already on file — record updated, not duplicated.`
+          : (markPaid ? `Stub filed — ${job.project} wages marked paid ✓` : 'Stub filed.'), 4500);
         render('home');
       },
     }, 'Save'),
@@ -984,7 +992,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
@@ -1003,6 +1011,42 @@ document.getElementById('conn-status').addEventListener('click', async () => {
     backgroundSync();
   } catch (e) { toast(e.message, 6000); }
 });
+
+// One-time repair: the same check scanned twice created duplicate stub
+// records (double-counting that money). Keep the newest per check number and
+// scrub duplicated note lines on jobs.
+async function dedupeChecks() {
+  try {
+    const stubs = await store.allStubs();
+    const byCheck = {};
+    for (const s of stubs) {
+      if (s.check_no && String(s.check_no).length >= 4) (byCheck[s.check_no] ||= []).push(s);
+    }
+    let removed = 0;
+    for (const group of Object.values(byCheck)) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+      for (const dupe of group.slice(1)) {
+        await store.deleteStub(dupe.id);
+        removed++;
+      }
+    }
+    const jobs = await store.allJobs();
+    for (const job of jobs) {
+      if (!job.notes || !job.notes.includes('\n')) continue;
+      const uniq = [...new Set(job.notes.split('\n'))].join('\n');
+      if (uniq !== job.notes) {
+        job.notes = uniq;
+        await store.putJob(job, { silent: true });
+      }
+    }
+    if (removed) {
+      store.notifyChanged();
+      if (auth.isConnected()) sync.scheduleMirror();
+      toast(`Removed ${removed} duplicate check record${removed === 1 ? '' : 's'}.`);
+    }
+  } catch (e) { console.warn('dedupe', e); }
+}
 
 // One-time repair: jobs saved before payee attribution existed inherit it
 // from their matched stub (explicit paid_to, or a Loan Out classification).
@@ -1057,6 +1101,7 @@ if ('serviceWorker' in navigator) {
 }
 render('home');
 setTimeout(backfillPaidVia, 800);
+setTimeout(dedupeChecks, 1200);
 window.addEventListener('load', () => setTimeout(backgroundSync, 1500));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
