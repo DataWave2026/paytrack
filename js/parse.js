@@ -28,18 +28,38 @@ export function parseMoney(s) {
 
 const lines = (text) => text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-// Find "Label ... value": value on same line after the label, else next line.
-function labeled(ls, labelRe) {
+// Lines that are themselves field labels. Photographed stubs often OCR as a
+// label column followed by a value column, so values must be paired by
+// block position, not just "next line".
+const LABELY = /^(project|work period (start|end) date|days worked|controlling employer|payroll employer|check date|name|address|classification|job title|loan out company|earning type|time worked|rate|work location|amount|gross earnings|total deductions|net earnings|payments|primary account|total hours worked|pay (date|period)|employee)\b\s*:?$/i;
+
+// Find "Label ... value". Layouts seen in the wild: value after the label on
+// the same line; value on the next line; or a stacked label block followed by
+// a stacked value block in the same order (photographed stubs OCR that way).
+// Candidates are tried in layout-likelihood order against `valid`.
+function labeled(ls, labelRe, valid = (v) => !!v) {
   for (let i = 0; i < ls.length; i++) {
     const m = ls[i].match(labelRe);
-    if (m) {
-      const rest = ls[i].slice(m.index + m[0].length).replace(/^[:\s]+/, '').trim();
-      if (rest) return rest;
-      if (ls[i + 1]) return ls[i + 1];
+    if (!m) continue;
+    const rest = ls[i].slice(m.index + m[0].length).replace(/^[:\s]+/, '').trim();
+    let before = 0;
+    while (i - 1 - before >= 0 && LABELY.test(ls[i - 1 - before])) before++;
+    let after = 0;
+    while (i + 1 + after < ls.length && LABELY.test(ls[i + 1 + after])) after++;
+    const next = ls[i + 1];
+    const block = ls[i + 1 + after + before];
+    const stacked = after > 0 || before > 0;
+    const candidates = [rest, ...(stacked ? [block, next] : [next, block])];
+    for (const c of candidates) {
+      if (c && !LABELY.test(c) && valid(c)) return c;
     }
+    return '';
   }
   return '';
 }
+
+const isDate = (v) => !!parseDate(v);
+const isMoney = (v) => parseMoney(v) !== null;
 
 function allDates(text) {
   const found = [];
@@ -70,16 +90,16 @@ export function blankParse() {
 
 function parseGenericInto(p, text) {
   const ls = lines(text);
-  if (!p.gross) p.gross = parseMoney(labeled(ls, /gross\s+(earnings|pay|wages|amount)/i));
-  if (!p.net) p.net = parseMoney(labeled(ls, /net\s+(earnings|pay|amount)/i));
-  if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date|pay\s+date|date\s+of\s+payment/i));
+  if (!p.gross) p.gross = parseMoney(labeled(ls, /gross\s+(earnings|pay|wages|amount)/i, isMoney));
+  if (!p.net) p.net = parseMoney(labeled(ls, /net\s+(earnings|pay|amount)/i, isMoney));
+  if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date|pay\s+date|date\s+of\s+payment/i, isDate));
   if (!p.check_no) {
     const m = text.match(/check\s*#?\s*(\d{5,})/i);
     if (m) p.check_no = m[1];
   }
   if (!p.period_start) {
-    p.period_start = parseDate(labeled(ls, /(work\s+)?period\s+(start|begin(ning)?)(\s+date)?/i));
-    p.period_end = p.period_end || parseDate(labeled(ls, /(work\s+)?period\s+end(ing)?(\s+date)?/i));
+    p.period_start = parseDate(labeled(ls, /(work\s+)?period\s+(start|begin(ning)?)(\s+date)?/i, isDate));
+    p.period_end = p.period_end || parseDate(labeled(ls, /(work\s+)?period\s+end(ing)?(\s+date)?/i, isDate));
   }
   if (!p.period_start) {
     const m = text.match(/period[:\s]+([^\n]+?)\s*(?:-|to|through|–)\s*([^\n]+)/i);
@@ -99,6 +119,10 @@ function parseGenericInto(p, text) {
   if (p.day_count === null) {
     const m = text.match(/days\s+worked[:\s]+(\d+)/i);
     if (m) p.day_count = parseInt(m[1], 10);
+    else {
+      const v = labeled(ls, /days\s+worked/i, x => /^\d{1,2}(\.\d+)?$/.test(x.trim()));
+      if (v) p.day_count = parseInt(v, 10);
+    }
   }
   if (!p.project_name) p.project_name = labeled(ls, /^project(\s+name)?\b/i);
   if (!p.employer) {
@@ -113,9 +137,9 @@ function parseWrapbook(text) {
   p.vendor = 'Wrapbook';
   const ls = lines(text);
   p.project_name = labeled(ls, /^project\b/i);
-  p.period_start = parseDate(labeled(ls, /work\s+period\s+start\s+date/i));
-  p.period_end = parseDate(labeled(ls, /work\s+period\s+end\s+date/i));
-  p.check_date = parseDate(labeled(ls, /check\s+date/i));
+  p.period_start = parseDate(labeled(ls, /work\s+period\s+start\s+date/i, isDate));
+  p.period_end = parseDate(labeled(ls, /work\s+period\s+end\s+date/i, isDate));
+  p.check_date = parseDate(labeled(ls, /check\s+date/i, isDate));
   p.employer = labeled(ls, /controlling\s+employer/i).replace(/,.*$/, '');
   const chk = text.match(/check\s*#\s*(\d+)\s+on\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i);
   if (chk) { p.check_no = chk[1]; if (!p.check_date) p.check_date = parseDate(chk[2]); }

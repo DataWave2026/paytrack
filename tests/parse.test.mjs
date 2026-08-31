@@ -29,6 +29,45 @@ test('wrapbook stub parses', () => {
   assert.match(p.employer, /Example Pictures/);
 });
 
+test('column-style OCR (label block then value block) pairs correctly', () => {
+  const text = `WRAPBOOK
+Check Date
+Aug 25, 2026
+Project
+Work Period Start Date
+Work Period End Date
+Days Worked
+Ritual
+Aug 16, 2026
+Aug 22, 2026
+2
+Controlling Employer
+Payroll Employer
+Example Pictures, 1 Studio Way, Malibu, CA
+TakeOne Network Corp. DBA Wrapbook
+Straight Time
+8.0 hours
+$81.82/hr
+Gross Earnings:
+Total Deductions:
+Net Earnings:
+$1,759.10
+$0.00
+$1,759.10
+Total Hours Worked
+17.5
+Paid by Check #1001262960 on Aug 25, 2026`;
+  const p = parseStub(text);
+  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.period_start, '2026-08-16');
+  assert.equal(p.period_end, '2026-08-22');
+  assert.equal(p.day_count, 2);
+  assert.match(p.employer, /Example Pictures/);
+  assert.equal(p.gross, 1759.10);
+  assert.equal(p.net, 1759.10);
+  assert.equal(p.check_date, '2026-08-25');
+});
+
 test('generic parser survives an unknown vendor', () => {
   const text = `ACME PAYROLL SERVICES
 Pay Date: 09/04/2026

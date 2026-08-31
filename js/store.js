@@ -46,6 +46,24 @@ function getAll(storeName) {
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 export const now = () => new Date().toISOString();
 
+// Gear math shared by the job form and the importer.
+export function spanDays(j) {
+  if (j.days_worked) return j.days_worked;
+  if (!j.start_date) return null;
+  return Math.max(1, Math.round((new Date(j.end_date || j.start_date) - new Date(j.start_date)) / 86400000) + 1);
+}
+
+export function gearUnits(j) {
+  const d = spanDays(j);
+  if (!d) return null;
+  return j.gear_period === 'week' ? Math.ceil(d / 7) : d;
+}
+
+export function calcGearTotal(j) {
+  const u = gearUnits(j);
+  if (j.gear_rate && !j.gear_total && u) j.gear_total = j.gear_rate * u;
+}
+
 // ---- Jobs ----
 // {id, project, company, start_date, end_date, rate_amount, rate_hours,
 //  rate_text, gear_rate, gear_total, wages_status, gear_status,
