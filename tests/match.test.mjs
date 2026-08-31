@@ -61,6 +61,21 @@ test('gear-only stub matches via gear amount + dates', () => {
   assert.ok(m[0].score >= 70);
 });
 
+test('gear check dated after worked days still auto-matches by exact name', () => {
+  // Job trimmed to actual worked days (Aug 9–13); gear check period Aug 15.
+  const withJob = [...jobs, { id: 'ya', project: 'YA Social Content Day',
+    start_date: '2026-08-09', end_date: '2026-08-13', wages_status: 'paid',
+    gear_total: null, gear_status: 'unpaid' }];
+  const stub = {
+    project_name: 'YA Social Content Day', employer: 'Netflix Media, LLC',
+    period_start: '2026-08-15', period_end: '2026-08-15',
+    hourly_rates: [], gear_amount: 2400,
+  };
+  const m = matchStub(stub, withJob);
+  assert.equal(m[0].job.id, 'ya');
+  assert.ok(m[0].score >= 70, `score was ${m[0].score}`);   // auto-select bar
+});
+
 test('deleted jobs are never candidates', () => {
   const withDeleted = [...jobs, { id: 'd', project: 'Ritual', deleted: true,
     start_date: '2026-08-16', end_date: '2026-08-22', rate_amount: 900, rate_hours: 11 }];
