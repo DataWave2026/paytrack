@@ -208,7 +208,7 @@ function parseGenericInto(p, text) {
     }
   }
   if (!p.project_name) {
-    p.project_name = labeled(ls, /^project(\s+name)?\b/i, v => !parseDate(v.slice(0, 20)));
+    p.project_name = labeled(ls, /^project(\s+name)?\b/i, projectish);
   }
   if (!p.payee) {
     p.payee = labeled(ls, /paid\s+to|payee|payable\s+to/i)
@@ -221,6 +221,13 @@ function parseGenericInto(p, text) {
   }
   return p;
 }
+
+// Earning-type-ish text (kit/box fee, rentals, penalties…) is never a
+// project title or job title, no matter where OCR drops it.
+const earnyText = (l) => EARN_TYPES.test(l) || /\b(fees?|rentals?)\b/i.test(l);
+
+// A plausible project title: not a date, not an address/FEIN line.
+const projectish = (v) => !parseDate(v.slice(0, 20)) && !/\d{5}|FEIN/i.test(v) && v.split(',').length <= 2;
 
 const isStandaloneDate = (l) =>
   /^([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4})$/.test(l.trim());
@@ -276,10 +283,10 @@ function parseWrapbook(text) {
   const startLine = dateLines.find(x => x.dates.includes(p.period_start) && !x.dates.every(d => d === p.check_date));
   if (startLine) {
     const prev = ls[startLine.i - 1] || '';
-    if (prev && !LABELY.test(prev) && !parseDate(prev)) p.project_name = prev;
+    if (prev && !LABELY.test(prev) && !parseDate(prev) && !earnyText(prev)) p.project_name = prev;
   }
   if (!p.project_name) {
-    p.project_name = labeled(ls, /^project\b/i, v => !parseDate(v.slice(0, 20)));
+    p.project_name = labeled(ls, /^project\b/i, projectish);
   }
   const endLine = [...dateLines].reverse().find(x => x.dates.includes(p.period_end) && !x.dates.every(d => d === p.check_date));
   if (endLine && /^\d{1,2}$/.test((ls[endLine.i + 1] || '').trim())) {
@@ -333,7 +340,7 @@ function parseWrapbook(text) {
       const pref = l.split(',')[0];
       if (l.includes(',') && squash(pref) === squash(p.payee)) { loanOutCo = pref; continue; }
       const shortText = !/[\d@]/.test(l) && !/^loan[\s-]*out$/i.test(l)
-        && l.split(/\s+/).length <= 5 && l !== p.project_name;
+        && !earnyText(l) && l.split(/\s+/).length <= 5 && l !== p.project_name;
       if (!p.job_title && shortText) p.job_title = l;
       else if (p.job_title && !projFallback && shortText && l !== p.job_title) projFallback = l;
       if (loanOutCo && p.job_title && projFallback) break;
