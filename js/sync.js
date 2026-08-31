@@ -5,7 +5,8 @@ import * as g from './google.js';
 import * as store from './store.js';
 import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
 
-const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked', 'rate_amount',
+const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked',
+  'work_dates', 'calendar_event_ids', 'rate_amount',
   'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
   'no_cal', 'notes', 'updated_at', 'deleted'];
@@ -35,6 +36,7 @@ const fromRow = (cols, row) => {
       v = v === '' ? null : parseFloat(v);
     } else if (c === 'deleted' || c === 'no_cal') v = v === 'true';
     else if (c === 'hourly_rates') v = v ? v.split('|').map(Number) : [];
+    else if (c === 'work_dates' || c === 'calendar_event_ids') v = v ? v.split('|') : [];
     rec[c] = v;
   });
   return rec;
@@ -107,27 +109,62 @@ export async function pushJobToCalendar(job) {
   // no_cal jobs (imported from the iCloud calendar) stay off the Google
   // calendar — their original event already exists in Apple Calendar.
   if (job.no_cal || !s.calendarId || !job.start_date) return job;
-  const event = {
+  const base = {
     summary: job.project + (job.company ? ` (${job.company})` : ''),
     description: jobToNote(job) + (job.notes ? `\n${job.notes}` : ''),
-    start: { date: job.start_date },
-    end: { date: addDays(job.end_date || job.start_date, 1) },
     extendedProperties: { private: { paytrackJobId: job.id } },
   };
-  if (job.deleted) {
+  const perDay = (job.work_dates || []).filter(Boolean).sort();
+
+  const deleteAll = async () => {
     if (job.calendar_event_id) await g.deleteEvent(s.calendarId, job.calendar_event_id);
+    for (const id of job.calendar_event_ids || []) await g.deleteEvent(s.calendarId, id);
     job.calendar_event_id = '';
-  } else if (job.calendar_event_id) {
-    await g.patchEvent(s.calendarId, job.calendar_event_id, event)
-      .catch(async e => {
-        if (/404|410/.test(e.message)) {
-          const created = await g.insertEvent(s.calendarId, event);
-          job.calendar_event_id = created.id;
-        } else throw e;
-      });
+    job.calendar_event_ids = [];
+  };
+
+  if (job.deleted) {
+    await deleteAll();
+  } else if (perDay.length) {
+    // Only the days actually worked get calendar events — never a full-week
+    // block for a pay period.
+    const contiguous = perDay.every((d, i) => i === 0 || d === addDays(perDay[i - 1], 1));
+    if (contiguous && job.calendar_event_id && !(job.calendar_event_ids || []).length) {
+      // Fix the originally created event in place: resize it to the worked run.
+      const event = { ...base, start: { date: perDay[0] }, end: { date: addDays(perDay[perDay.length - 1], 1) } };
+      await g.patchEvent(s.calendarId, job.calendar_event_id, event)
+        .catch(async e => {
+          if (/404|410/.test(e.message)) {
+            const created = await g.insertEvent(s.calendarId, event);
+            job.calendar_event_id = created.id;
+          } else throw e;
+        });
+    } else {
+      // Non-contiguous days can't be one event — replace with per-day events.
+      await deleteAll();
+      for (const d of perDay) {
+        const created = await g.insertEvent(s.calendarId,
+          { ...base, start: { date: d }, end: { date: addDays(d, 1) } });
+        job.calendar_event_ids.push(created.id);
+      }
+    }
   } else {
-    const created = await g.insertEvent(s.calendarId, event);
-    job.calendar_event_id = created.id;
+    // Whole-span single event (jobs whose exact days aren't specified).
+    for (const id of job.calendar_event_ids || []) await g.deleteEvent(s.calendarId, id);
+    job.calendar_event_ids = [];
+    const event = { ...base, start: { date: job.start_date }, end: { date: addDays(job.end_date || job.start_date, 1) } };
+    if (job.calendar_event_id) {
+      await g.patchEvent(s.calendarId, job.calendar_event_id, event)
+        .catch(async e => {
+          if (/404|410/.test(e.message)) {
+            const created = await g.insertEvent(s.calendarId, event);
+            job.calendar_event_id = created.id;
+          } else throw e;
+        });
+    } else {
+      const created = await g.insertEvent(s.calendarId, event);
+      job.calendar_event_id = created.id;
+    }
   }
   return job;
 }
@@ -218,7 +255,7 @@ export async function pushUnsynced() {
   if (!s.calendarId) return;
   const jobs = await store.allJobs();
   for (const job of jobs) {
-    if (!job.no_cal && !job.calendar_event_id && job.start_date) {
+    if (!job.no_cal && !job.calendar_event_id && !(job.calendar_event_ids?.length) && job.start_date) {
       await pushJob(job).catch(e => console.warn('catch-up push', e));
     }
   }
@@ -251,8 +288,12 @@ export async function pullCalendar() {
       if ((ev.updated || '') <= (job.updated_at || '')) continue;  // our own push
       if (ev.status === 'cancelled') { job.deleted = true; }
       else {
-        if (ev.start?.date) job.start_date = ev.start.date;
-        if (ev.end?.date) job.end_date = addDays(ev.end.date, -1);
+        // Jobs with specific worked days have several events; a single event's
+        // dates must not overwrite the job's overall range.
+        if (!(job.work_dates?.length)) {
+          if (ev.start?.date) job.start_date = ev.start.date;
+          if (ev.end?.date) job.end_date = addDays(ev.end.date, -1);
+        }
         const note = parseJobNote(ev.description || '');
         if (note.wages_status) job.wages_status = note.wages_status;
         if (note.gear_status) job.gear_status = note.gear_status;
