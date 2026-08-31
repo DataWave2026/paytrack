@@ -9,6 +9,7 @@ const DEFAULTS = {
   calendarId: '',            // Google calendar to sync with
   calendarName: '',
   sheetId: '',               // "PayTrack DB" spreadsheet
+  companyName: '',           // user's loan-out company, for payee attribution
   alertDaysWages: 14,        // days after wrap before wages count as overdue
   alertDaysGear: 30,         // days after wrap before gear rental counts as overdue
   everConnected: false,      // gate for silent background re-auth attempts
