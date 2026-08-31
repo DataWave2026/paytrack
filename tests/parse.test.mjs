@@ -278,6 +278,56 @@ Paid by Check #10012606 on Aug 20, 2026`;
   assert.equal(p.period_end, '2026-08-15');
 });
 
+test('gear-only invoice stub: drifted project, date+note row, buried gross', async () => {
+  const { gearOnStub } = await import('../js/parse.js');
+  const text = `________________
+
+W WRAPBOOK
+Check Date
+Aug 20, 2026
+support@wrapbook.com
+Name Address
+Classification
+Job Title
+Controlling Employer
+Payroll Employer
+1234 ExampleMedia (Doe, Jane M.), XX-XXX
+123 Example St, Los Angeles, CA, 90000-1111
+Loan Out
+Digital Imaging Tech
+Netflix Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028
+TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206 New York, NY, 10003-1502, FEIN#: 82-4462453
+Project
+Date
+Notes
+Aug 15, 2026 Kit/box fee
+Gross Earnings:
+Total Deductions:
+Net Earnings:
+YA Social Content Day
+1 (833) 977-2665
+Amount
+$2,400.00
+Amount $2,400.00
+$0.00
+$2,400.00
+Payments
+Amount
+Primary Account:
+Paid by Check #1001260617 on Aug 20, 2026
+$2,400.00`;
+  const p = parseStub(text);
+  assert.equal(p.project_name, 'YA Social Content Day');
+  assert.equal(p.employer, 'Netflix Media, LLC');
+  assert.equal(p.payee, '1234 ExampleMedia');
+  assert.equal(p.paid_to, 'company');
+  assert.equal(p.period_start, '2026-08-15');
+  assert.equal(p.period_end, '2026-08-15');
+  assert.equal(p.day_count, 1);
+  assert.equal(p.gross, 2400);
+  assert.equal(gearOnStub(p.earnings), 2400);
+});
+
 test('kit fee / box rental lines are recognized as gear payment', async () => {
   const { gearOnStub } = await import('../js/parse.js');
   const text = `WRAPBOOK

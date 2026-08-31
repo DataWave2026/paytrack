@@ -31,7 +31,7 @@ const lines = (text) => text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 // Lines that are themselves field labels. Photographed stubs often OCR as a
 // label column followed by a value column, so values must be paired by
 // block position, not just "next line".
-const LABEL_PHRASES = /(project|work\s+period\s+(start|end)\s+date|days\s+worked|controlling\s+employer|payroll\s+employer|check\s+date|name|address|classification|job\s+title|loan\s+out\s+company|earning\s+type|time\s+worked|rate|work\s+location|amount|gross\s+earnings|total\s+deductions|net\s+earnings|payments|primary\s+account|total\s+hours\s+worked|pay\s+(date|period)|employee)/gi;
+const LABEL_PHRASES = /(project|work\s+period\s+(start|end)\s+date|days\s+worked|controlling\s+employer|payroll\s+employer|check\s+date|name|address|classification|job\s+title|loan\s+out\s+company|earning\s+type|time\s+worked|rate|work\s+location|amount|gross\s+earnings|total\s+deductions|net\s+earnings|payments|primary\s+account|total\s+hours\s+worked|pay\s+(date|period)|employee|date|notes)/gi;
 
 // A "label line" may be ONE label or SEVERAL fused together — Google's OCR
 // merges adjacent cells ("Work Period End Date Days Worked"). A line is
@@ -190,6 +190,11 @@ function parseGenericInto(p, text) {
   }
   if (!p.hourly_rates.length) p.hourly_rates = hourlyRates(text);
   if (!p.earnings.length) p.earnings = parseEarnings(text);
+  // Invoice-style stubs bury Gross among stray lines — the earnings sum is it.
+  if (p.gross === null && p.earnings.length) {
+    const s = p.earnings.reduce((a, e) => a + (e.amount || 0), 0);
+    if (s) p.gross = s;
+  }
   if (p.hours === null) {
     const m = text.match(/total\s+hours(\s+worked)?[:\s]+(\d+(?:\.\d+)?)/i);
     if (m) p.hours = parseFloat(m[2]);
@@ -202,7 +207,9 @@ function parseGenericInto(p, text) {
       if (v) p.day_count = parseInt(v, 10);
     }
   }
-  if (!p.project_name) p.project_name = labeled(ls, /^project(\s+name)?\b/i);
+  if (!p.project_name) {
+    p.project_name = labeled(ls, /^project(\s+name)?\b/i, v => !parseDate(v.slice(0, 20)));
+  }
   if (!p.payee) {
     p.payee = labeled(ls, /paid\s+to|payee|payable\s+to/i)
       || labeled(ls, /^employee(\s+name)?\b/i);
@@ -245,6 +252,24 @@ function parseWrapbook(text) {
     p.period_start = period[0];
     p.period_end = period[period.length - 1];
   }
+  // Gear/invoice stubs list work dates as "Aug 15, 2026 Kit/box fee" rows —
+  // a date followed by a note, with no Work Period labels at all.
+  if (!p.period_start) {
+    const noted = [];
+    for (const l of ls) {
+      const m = l.match(/^([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4})\s+\S/);
+      if (m) {
+        const d = parseDate(m[1]);
+        if (d && d !== p.check_date && !/\bcheck\b/i.test(l)) noted.push(d);
+      }
+    }
+    if (noted.length) {
+      noted.sort();
+      p.period_start = noted[0];
+      p.period_end = noted[noted.length - 1];
+      if (p.day_count === null) p.day_count = noted.length;
+    }
+  }
 
   // Project: the line right before the period-start date. Days worked: the
   // small integer right after the period-end date.
@@ -253,7 +278,9 @@ function parseWrapbook(text) {
     const prev = ls[startLine.i - 1] || '';
     if (prev && !LABELY.test(prev) && !parseDate(prev)) p.project_name = prev;
   }
-  if (!p.project_name) p.project_name = labeled(ls, /^project\b/i);
+  if (!p.project_name) {
+    p.project_name = labeled(ls, /^project\b/i, v => !parseDate(v.slice(0, 20)));
+  }
   const endLine = [...dateLines].reverse().find(x => x.dates.includes(p.period_end) && !x.dates.every(d => d === p.check_date));
   if (endLine && /^\d{1,2}$/.test((ls[endLine.i + 1] || '').trim())) {
     p.day_count = parseInt(ls[endLine.i + 1], 10);
@@ -297,6 +324,7 @@ function parseWrapbook(text) {
   // own company reappearing with an address marks a loan-out.
   if (payeeIdx >= 0) {
     let loanOutCo = '';
+    let projFallback = '';
     for (let i = payeeIdx + 1; i < ls.length; i++) {
       const l = ls[i];
       if (LABELY.test(l) || parseDate(l)) continue;
@@ -304,13 +332,16 @@ function parseWrapbook(text) {
       // (compared by name so it works for companies starting with digits).
       const pref = l.split(',')[0];
       if (l.includes(',') && squash(pref) === squash(p.payee)) { loanOutCo = pref; continue; }
-      if (!p.job_title && !/\d/.test(l) && !/^loan[\s-]*out$/i.test(l)
-          && l.split(/\s+/).length <= 5 && l !== p.project_name) {
-        p.job_title = l;
-      }
-      if (loanOutCo && p.job_title) break;
+      const shortText = !/[\d@]/.test(l) && !/^loan[\s-]*out$/i.test(l)
+        && l.split(/\s+/).length <= 5 && l !== p.project_name;
+      if (!p.job_title && shortText) p.job_title = l;
+      else if (p.job_title && !projFallback && shortText && l !== p.job_title) projFallback = l;
+      if (loanOutCo && p.job_title && projFallback) break;
     }
     if (loanOutCo && !p.classification) p.classification = 'Loan Out';
+    // Gear/invoice stubs park the project title far from its label — the
+    // next short titled line after the job title is the best candidate.
+    if (!p.project_name && projFallback) p.project_name = projFallback;
   }
 
   // Controlling employer: first company-with-address that isn't the payee's

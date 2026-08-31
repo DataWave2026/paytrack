@@ -52,6 +52,15 @@ function norm(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// A gear payment matching the job's stated gear total is a strong signal.
+function gearScore(stub, job) {
+  if (!stub.gear_amount || !job.gear_total) return 0;
+  const diff = Math.abs(stub.gear_amount - job.gear_total) / job.gear_total;
+  if (diff <= 0.02) return 25;
+  if (diff <= 0.15) return 10;
+  return 0;
+}
+
 function nameScore(stub, job) {
   const stubNames = [norm(stub.project_name), norm(stub.employer)].filter(Boolean);
   const jobNames = [norm(job.project), norm(job.company)].filter(Boolean);
@@ -79,6 +88,7 @@ export function matchStub(stub, jobs) {
       const o = overlapScore(stub, job);
       const r = rateScore(stub, job);
       const n = nameScore(stub, job);
+      const ga = gearScore(stub, job);
       const reasons = [];
       if (o >= 50) reasons.push('dates overlap');
       else if (o > 0) reasons.push('dates close');
@@ -86,7 +96,9 @@ export function matchStub(stub, jobs) {
       else if (r > 0) reasons.push('OT rate matches');
       if (n >= 22) reasons.push('name matches');
       else if (n > 0) reasons.push('name similar');
-      return { job, score: o + r + n, reasons };
+      if (ga >= 25) reasons.push('gear amount matches');
+      else if (ga > 0) reasons.push('gear amount close');
+      return { job, score: o + r + n + ga, reasons };
     })
     .filter(c => c.score >= 20)
     .sort((a, b) => b.score - a.score);

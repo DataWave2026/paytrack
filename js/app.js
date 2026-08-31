@@ -632,13 +632,34 @@ function confirmStubForm(parsed, uploaded, ocrText) {
 
 async function pickMatch(p, uploaded, ocrText) {
   const jobsList = await store.allJobs();
-  const candidates = matchStub(p, jobsList);
+  const stubGear = gearOnStub(p.earnings);
+  // A gear-only stub (kit/box rental with no wage lines) pays gear, not wages.
+  const gearOnly = stubGear > 0
+    && !(p.hourly_rates || []).length
+    && !(p.earnings || []).some(e => /straight|overtime|\bot\b|meal|holiday|penalt/i.test(e.type || ''));
+  const candidates = matchStub({ ...p, gear_amount: stubGear }, jobsList);
   // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
   // default to "create a new job" so a stale selection never sticks.
   let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
-  let markPaid = true;
-  const stubGear = gearOnStub(p.earnings);
+  let markPaid = !gearOnly;
   let markGearPaid = stubGear > 0;
+  const gearNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
+  const updateGearNote = () => {
+    if (stubGear <= 0) return;
+    if (chosen && chosen.gear_total) {
+      const diff = stubGear - chosen.gear_total;
+      if (Math.abs(diff) <= 1) {
+        gearNote.textContent = `Matches the job's stated gear total (${fmt$(chosen.gear_total)})`;
+        gearNote.style.color = 'var(--accent)';
+      } else {
+        gearNote.textContent = `Job states ${fmt$(chosen.gear_total)} — this stub pays ${fmt$(stubGear)} (${diff < 0 ? fmt$(-diff) + ' short' : fmt$(diff) + ' over'})`;
+        gearNote.style.color = 'var(--warn)';
+      }
+    } else {
+      gearNote.textContent = chosen ? 'Job has no stated gear total — this amount will fill it in.' : '';
+      gearNote.style.color = '';
+    }
+  };
 
   // Worked-days picker for a NEW job — a stub's pay period often spans a
   // whole week while only some days were worked; only tapped days go on the
@@ -673,6 +694,7 @@ async function pickMatch(p, uploaded, ocrText) {
         onclick: () => { chosen = null; redraw(); },
       }, h('div', { class: 'title' }, (chosen === null ? '✓ ' : '') + 'None of these — create a new job from this stub')));
     dayWrap.style.display = chosen === null && chipCount > 1 ? '' : 'none';
+    updateGearNote();
   };
   redraw();
 
@@ -682,14 +704,16 @@ async function pickMatch(p, uploaded, ocrText) {
     dayWrap,
     h('label', { class: 'mt' },
       h('input', {
-        type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
+        type: 'checkbox', ...(markPaid ? { checked: 'checked' } : {}), style: 'width:auto;margin-right:8px',
         onchange: (e) => markPaid = e.target.checked,
-      }), 'Mark wages PAID on that job'),
-    stubGear > 0 ? h('label', { class: 'mt' },
-      h('input', {
-        type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
-        onchange: (e) => markGearPaid = e.target.checked,
-      }), `Mark gear PAID too (${fmt$(stubGear)} kit/box rental on this stub)`) : null,
+      }), gearOnly ? 'Also mark wages PAID (this looks like a gear-only payment)' : 'Mark wages PAID on that job'),
+    stubGear > 0 ? h('div', { class: 'mt' },
+      h('label', {},
+        h('input', {
+          type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
+          onchange: (e) => markGearPaid = e.target.checked,
+        }), `Mark gear PAID (${fmt$(stubGear)} ${gearOnly ? 'gear payment' : 'kit/box rental on this stub'})`),
+      gearNote) : null,
     h('button', {
       class: 'primary', onclick: async () => {
         let job = chosen;
@@ -716,9 +740,11 @@ async function pickMatch(p, uploaded, ocrText) {
         }
         if (markPaid) job.wages_status = 'paid';
         if (stubGear > 0 && markGearPaid) {
-          job.gear_status = 'paid';
+          // A payment short of the job's stated gear total is partial, not paid.
+          const short = job.gear_total && stubGear < job.gear_total - 1;
+          job.gear_status = short ? 'partial' : 'paid';
           if (job.gear_total === null || job.gear_total === undefined) job.gear_total = stubGear;
-          const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(stubGear)})`;
+          const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(stubGear)}${short ? ` of ${fmt$(job.gear_total)} — partial` : ''})`;
           if (!job.notes.includes(gline)) job.notes = job.notes ? `${job.notes}\n${gline}` : gline;
         }
         // Backfill basics the job was missing, so the calendar event ends up
@@ -958,7 +984,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
