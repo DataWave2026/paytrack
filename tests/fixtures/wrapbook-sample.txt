@@ -1,0 +1,78 @@
+WRAPBOOK
+support@wrapbook.com
+1 (833) 977-2665
+
+Check Date
+Aug 25, 2026
+
+Name
+Address
+Classification
+Job Title
+Loan Out Company
+ExampleMedia LLC (Doe, Jane), XX-XXX
+123 Example St, Los Angeles, CA, 90000
+Loan Out
+Digital Imaging Tech
+ExampleMedia LLC, 123 Example St, Los Angeles, CA, 90000
+FEIN#: XX-XXX
+
+Controlling Employer
+Example Pictures, 1 Studio Way, Malibu, CA, 90265
+
+Payroll Employer
+TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
+New York, NY, 10003-1502
+
+Project
+Ritual
+Work Period Start Date
+Aug 16, 2026
+Work Period End Date
+Aug 22, 2026
+Days Worked
+2
+
+Earning Type
+Time Worked
+Rate
+Work Location
+Amount
+Straight Time
+8.0 hours
+$81.82/hr
+Los Angeles, CA
+$654.55
+Straight Time
+5.0 hours
+$90.00/hr
+Los Angeles, CA
+$450.00
+OT x1.5
+4.0 hours
+$122.73/hr
+Los Angeles, CA
+$490.91
+OT x2.0
+0.5 hours
+$163.64/hr
+Los Angeles, CA
+$81.82
+Meal Penalties
+$81.82
+Total Hours Worked
+17.5
+
+Amount
+Gross Earnings:
+$1,759.10
+Total Deductions:
+$0.00
+Net Earnings:
+$1,759.10
+
+Payments
+Amount
+Primary Account:
+Paid by Check #1001262960 on Aug 25, 2026
+$1,759.10

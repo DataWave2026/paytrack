@@ -1,0 +1,10 @@
+{
+  "name": "paytrack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/parse.test.mjs tests/match.test.mjs",
+    "serve": "python3 -m http.server 8123"
+  }
+}
