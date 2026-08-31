@@ -375,8 +375,16 @@ let totalsYear = new Date().getFullYear();
 
 // Actual stub gross when paystubs are matched to the job; rate × days otherwise.
 function jobWages(job, stubsByJob) {
-  const grosses = (stubsByJob[job.id] || []).map(s => s.gross).filter(x => x !== null && x !== undefined);
-  if (grosses.length) return { amount: grosses.reduce((a, b) => a + b, 0), actual: true };
+  // A stub's WAGE contribution is its gross minus its gear lines — gear money
+  // is tracked via gear_total and must never be double-counted as wages.
+  // A gear-only stub therefore contributes nothing here.
+  let sum = 0, any = false;
+  for (const s of stubsByJob[job.id] || []) {
+    if (s.gross === null || s.gross === undefined) continue;
+    const wagePart = Math.max(0, s.gross - gearOnStub(s.earnings));
+    if (wagePart > 0) { sum += wagePart; any = true; }
+  }
+  if (any) return { amount: sum, actual: true };
   if (job.rate_amount) return { amount: job.rate_amount * jobDays(job), actual: false };
   return null;
 }
@@ -992,7 +1000,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v38';
+const APP_VERSION = 'v39';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
