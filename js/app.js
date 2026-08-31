@@ -488,11 +488,35 @@ function confirmStubForm(parsed, uploaded, ocrText) {
       else p[key] = e.target.value;
     },
   });
+  if (!Array.isArray(p.earnings)) p.earnings = [];
+  const earnBox = h('div', {});
+  const redrawEarn = () => {
+    const num = (obj, key) => (ev) => obj[key] = ev.target.value === '' ? null : parseFloat(ev.target.value);
+    earnBox.replaceChildren(
+      ...p.earnings.map((e, i) => h('div', { class: 'earnrow' },
+        h('input', { value: e.type || '', placeholder: 'Type', oninput: ev => e.type = ev.target.value }),
+        h('input', { value: e.hours ?? '', placeholder: 'hrs', type: 'number', inputmode: 'decimal', oninput: num(e, 'hours') }),
+        h('input', { value: e.rate ?? '', placeholder: '$/hr', type: 'number', inputmode: 'decimal', oninput: num(e, 'rate') }),
+        h('input', { value: e.amount ?? '', placeholder: '$', type: 'number', inputmode: 'decimal', oninput: num(e, 'amount') }),
+        h('button', {
+          class: 'inline secondary', type: 'button',
+          onclick: () => { p.earnings.splice(i, 1); redrawEarn(); },
+        }, '×'))),
+      h('button', {
+        class: 'inline secondary', type: 'button', style: 'margin-top:8px',
+        onclick: () => { p.earnings.push({ type: '', hours: null, rate: null, amount: null }); redrawEarn(); },
+      }, '+ Add line'));
+  };
+  redrawEarn();
+
   viewEl.replaceChildren(h('div', { class: 'card' },
     h('h2', {}, 'Confirm stub details' + (p.vendor ? ` — ${p.vendor}` : '')),
     h('p', { class: 'muted small' }, 'OCR pre-filled what it could. Fix anything that looks wrong.'),
     h('label', {}, 'Project'), input('project_name'),
     h('label', {}, 'Employer / production co'), input('employer'),
+    h('div', { class: 'row2' },
+      h('div', {}, h('label', {}, 'Paid to (you or your company)'), input('payee')),
+      h('div', {}, h('label', {}, 'Classification'), input('classification', { placeholder: 'Loan Out / W-2 …' }))),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
@@ -506,6 +530,8 @@ function confirmStubForm(parsed, uploaded, ocrText) {
       h('div', {}, h('label', {}, 'Check #'), input('check_no')),
       h('div', {}, h('label', {}, 'Check date'), input('check_date', { type: 'date' }))),
     h('label', {}, 'Hourly rates seen (comma-separated)'), input('hourly_rates', { placeholder: '81.82, 90' }),
+    h('label', {}, 'Earnings breakdown (kept with the stub record)'),
+    earnBox,
     h('button', { class: 'primary', onclick: () => pickMatch(p, uploaded, ocrText) }, 'Find matching job →'),
     h('button', { class: 'secondary', onclick: () => render('stub') }, 'Cancel'),
   ));
@@ -577,6 +603,8 @@ async function pickMatch(p, uploaded, ocrText) {
           id: store.uid(),
           drive_file_id: '', photo_name: '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
+          payee: p.payee || '', classification: p.classification || '',
+          earnings: p.earnings || [],
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
           gross: p.gross, net: p.net, check_no: p.check_no, check_date: p.check_date,
@@ -747,7 +775,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');

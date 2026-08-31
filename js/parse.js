@@ -84,8 +84,59 @@ export function blankParse() {
   return {
     vendor: '', project_name: '', employer: '', period_start: '', period_end: '',
     hourly_rates: [], hours: null, gross: null, net: null,
-    check_no: '', check_date: '', day_count: null,
+    check_no: '', check_date: '', day_count: null, earnings: [],
+    payee: '', classification: '',
   };
+}
+
+const EARN_TYPES = /(straight\s+time|overtime|ot\s*x?\s*[12](?:\.\d)?|meal\s+penalt(?:y|ies)|holiday|vacation|sick|kit\s+rental|box\s+rental|equipment\s+rental|per\s+diem|mileage|night\s+premium|[67]th\s+day|rest\s+invasion|wardrobe|idle\s+day|travel|wrap|prep)/i;
+
+// Catalog the earnings table: type, hours, rate, amount per line. Handles
+// row-per-line layouts AND column-style OCR (all types, then all hours, then
+// all rates, then all amounts — zipped back together by position).
+export function parseEarnings(text) {
+  let seg = text;
+  const start = text.search(/earning\s+type/i);
+  if (start >= 0) {
+    seg = text.slice(start);
+    const end = seg.search(/total\s+hours|gross\s+earnings/i);
+    if (end > 0) seg = seg.slice(0, end);
+  }
+  const ls = seg.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const entries = [], types = [], hoursCol = [], ratesCol = [], amountsCol = [];
+  for (const l of ls) {
+    if (/^(earning\s+type|time\s+worked|rate|work\s+location|amount)$/i.test(l)) continue;
+    const t = l.match(EARN_TYPES);
+    if (t) {
+      const rest = l.slice(t.index + t[0].length);
+      if (/\$|\d/.test(rest)) {
+        // whole row on one line
+        const hrs = rest.match(/([\d.]+)\s*(?:hours?|hrs?)\b/i);
+        const rate = rest.match(/\$\s?([\d,.]+)\s*\/\s*(?:hr|hour)/i);
+        const amts = [...rest.matchAll(/\$\s?([\d,]+\.?\d*)/g)].map(m => parseMoney(m[1]));
+        entries.push({
+          type: t[0].trim(), hours: hrs ? parseFloat(hrs[1]) : null,
+          rate: rate ? parseMoney(rate[1]) : null,
+          amount: amts.length ? amts[amts.length - 1] : null,
+        });
+      } else types.push(t[0].trim());
+    } else if (/^([\d.]+)\s*(?:hours?|hrs?)$/i.test(l)) {
+      hoursCol.push(parseFloat(l));
+    } else if (/^\$?\s?[\d,.]+\s*\/\s*(?:hr|hour)$/i.test(l)) {
+      ratesCol.push(parseMoney(l));
+    } else if (/^\$\s?[\d,]+\.?\d*$/.test(l)) {
+      amountsCol.push(parseMoney(l));
+    }
+  }
+  if (!entries.length && types.length) {
+    types.forEach((type, i) => entries.push({
+      type,
+      hours: hoursCol[i] ?? null,
+      rate: ratesCol[i] ?? null,
+      amount: amountsCol[i] ?? null,
+    }));
+  }
+  return entries;
 }
 
 function parseGenericInto(p, text) {
@@ -112,6 +163,7 @@ function parseGenericInto(p, text) {
     else if (ds.length === 1) { p.period_start = ds[0]; p.period_end = ds[0]; }
   }
   if (!p.hourly_rates.length) p.hourly_rates = hourlyRates(text);
+  if (!p.earnings.length) p.earnings = parseEarnings(text);
   if (p.hours === null) {
     const m = text.match(/total\s+hours(\s+worked)?[:\s]+(\d+(?:\.\d+)?)/i);
     if (m) p.hours = parseFloat(m[2]);
@@ -125,6 +177,11 @@ function parseGenericInto(p, text) {
     }
   }
   if (!p.project_name) p.project_name = labeled(ls, /^project(\s+name)?\b/i);
+  if (!p.payee) {
+    p.payee = labeled(ls, /paid\s+to|payee|payable\s+to/i)
+      || labeled(ls, /^employee(\s+name)?\b/i);
+    p.payee = p.payee.replace(/,.*$/, '');
+  }
   if (!p.employer) {
     p.employer = labeled(ls, /controlling\s+employer|production\s+company|client|employer\s+name/i)
       .replace(/,.*$/, '');
@@ -143,6 +200,9 @@ function parseWrapbook(text) {
   p.employer = labeled(ls, /controlling\s+employer/i).replace(/,.*$/, '');
   const chk = text.match(/check\s*#\s*(\d+)\s+on\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i);
   if (chk) { p.check_no = chk[1]; if (!p.check_date) p.check_date = parseDate(chk[2]); }
+  p.classification = labeled(ls, /^classification/i);
+  // Loan-out checks pay the company; otherwise the individual on the stub.
+  p.payee = (labeled(ls, /loan\s*out\s*company/i) || labeled(ls, /^name$/i)).replace(/,.*$/, '');
   return parseGenericInto(p, text);
 }
 
