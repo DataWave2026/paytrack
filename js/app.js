@@ -533,12 +533,24 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('label', {}, 'Project'), input('project_name'),
     h('label', {}, 'Employer / production co'), input('employer'),
     h('div', { class: 'row2' },
-      h('div', {}, h('label', {}, 'Paid to (name on the check)'), input('payee')),
+      h('div', {}, h('label', {}, 'Paid to'), (() => {
+        // Dropdown of the two known payees, auto-selected from the scan.
+        // Names come from Setup → Profile and are auto-learned from stubs.
+        const s0 = settings();
+        const sel = h('select', {
+          onchange: (e) => {
+            p.paid_to = e.target.value;
+            if (e.target.value === 'company' && s0.companyName) p.payee = s0.companyName;
+            if (e.target.value === 'me' && s0.personalName) p.payee = s0.personalName;
+          },
+        },
+          h('option', { value: '' }, '— pick —'),
+          h('option', { value: 'company' }, s0.companyName || (p.paid_to === 'company' && p.payee) || 'My company'),
+          h('option', { value: 'me' }, s0.personalName || (p.paid_to === 'me' && p.payee) || 'Me personally'));
+        sel.value = p.paid_to || '';
+        return sel;
+      })()),
       h('div', {}, h('label', {}, 'Job title'), input('job_title', { placeholder: 'Digital Imaging Tech' }))),
-    h('label', {}, 'Payment went to'),
-    segmented('paidto', p.paid_to || '',
-      [['me', 'Me personally'], ['company', 'My company']],
-      v => p.paid_to = v),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
@@ -625,6 +637,9 @@ async function pickMatch(p, uploaded, ocrText) {
         // Attribute the payment. The parser (or the user, via the selector)
         // decided from the Name on the stub; fall back to classification.
         const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
+        // Auto-learn the two payee names from real stubs.
+        if (p.paid_to === 'company' && p.payee && !settings().companyName) saveSettings({ companyName: p.payee });
+        if (p.paid_to === 'me' && p.payee && !settings().personalName) saveSettings({ personalName: p.payee });
         if (p.paid_to) job.paid_via = p.paid_to;
         else if (/loan\s*-?\s*out/i.test(p.classification || '')) job.paid_via = 'company';
         else if (p.payee) {
@@ -797,10 +812,15 @@ async function settingsView() {
     calCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Profile'),
-      h('label', {}, 'My loan-out company name (helps attribute checks to you vs the company)'),
+      h('label', {}, 'My loan-out company name (as it appears on stubs)'),
       h('input', {
-        value: s.companyName, placeholder: 'e.g. 3038DigitalMedia',
+        value: s.companyName, placeholder: 'auto-learned from company stubs',
         onchange: (e) => saveSettings({ companyName: e.target.value.trim() }),
+      }),
+      h('label', {}, 'My name (as it appears on stubs)'),
+      h('input', {
+        value: s.personalName, placeholder: 'auto-learned from personal stubs',
+        onchange: (e) => saveSettings({ personalName: e.target.value.trim() }),
       })),
     h('div', { class: 'card' },
       h('h2', {}, 'Alerts'),
@@ -835,7 +855,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');

@@ -10,6 +10,7 @@ const DEFAULTS = {
   calendarName: '',
   sheetId: '',               // "PayTrack DB" spreadsheet
   companyName: '',           // user's loan-out company, for payee attribution
+  personalName: '',          // user's own name as it appears on stubs
   alertDaysWages: 14,        // days after wrap before wages count as overdue
   alertDaysGear: 30,         // days after wrap before gear rental counts as overdue
   everConnected: false,      // gate for silent background re-auth attempts
