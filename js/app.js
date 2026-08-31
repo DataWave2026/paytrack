@@ -3,7 +3,7 @@ import * as store from './store.js';
 import * as auth from './auth.js';
 import * as g from './google.js';
 import * as sync from './sync.js';
-import { parseStub, blankParse } from './parse.js';
+import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub } from './match.js';
 
 // ---------- tiny DOM helper ----------
@@ -586,6 +586,8 @@ async function pickMatch(p, uploaded, ocrText) {
   // default to "create a new job" so a stale selection never sticks.
   let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
   let markPaid = true;
+  const stubGear = gearOnStub(p.earnings);
+  let markGearPaid = stubGear > 0;
 
   const list = h('div', {});
   const redraw = () => {
@@ -612,6 +614,11 @@ async function pickMatch(p, uploaded, ocrText) {
         type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
         onchange: (e) => markPaid = e.target.checked,
       }), 'Mark wages PAID on that job'),
+    stubGear > 0 ? h('label', { class: 'mt' },
+      h('input', {
+        type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
+        onchange: (e) => markGearPaid = e.target.checked,
+      }), `Mark gear PAID too (${fmt$(stubGear)} kit/box rental on this stub)`) : null,
     h('button', {
       class: 'primary', onclick: async () => {
         let job = chosen;
@@ -630,6 +637,12 @@ async function pickMatch(p, uploaded, ocrText) {
           };
         }
         if (markPaid) job.wages_status = 'paid';
+        if (stubGear > 0 && markGearPaid) {
+          job.gear_status = 'paid';
+          if (job.gear_total === null || job.gear_total === undefined) job.gear_total = stubGear;
+          const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(stubGear)})`;
+          if (!job.notes.includes(gline)) job.notes = job.notes ? `${job.notes}\n${gline}` : gline;
+        }
         // Backfill basics the job was missing, so the calendar event ends up
         // with company etc. without dumping the whole stub into it.
         if (!job.company && p.employer) job.company = p.employer;
@@ -855,7 +868,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v26';
+const APP_VERSION = 'v27';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
