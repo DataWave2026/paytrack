@@ -129,7 +129,7 @@ async function home() {
     h('div', { class: 'card' },
       h('h2', {}, 'Last 3 months'),
       h('table', { class: 'tot' },
-        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Paid to me'), h('th', {}, 'Paid to co.'), h('th', {}, 'Outstanding')),
+        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Me'), h('th', {}, 'Company'), h('th', {}, 'Owed')),
         last3.map(r => h('tr', {},
           h('td', {}, r.label),
           h('td', {}, r.me ? fmt$(r.me) : '—'),
@@ -360,7 +360,7 @@ async function totals() {
     }
   }
   const monthKeys = Object.keys(months).sort();
-  const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'long' });
+  const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'short' });
   const yearSeg = h('div', { class: 'seg' },
     years.map(y => h('button', {
       class: String(totalsYear) === y ? 'sel' : '',
@@ -882,7 +882,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
