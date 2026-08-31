@@ -113,6 +113,7 @@ button.inline { width: auto; margin: 0; padding: 8px 12px; font-size: .85rem; }
   flex: 1; border: none; background: var(--panel2); color: var(--muted);
   padding: 10px 0; font-size: .85rem; cursor: pointer;
 }
+.seg button.sel { background: var(--panel2); color: var(--text); font-weight: 700; }
 .seg button.sel.paid { background: rgba(76,195,138,.25); color: var(--accent); font-weight: 700; }
 .seg button.sel.unpaid { background: rgba(229,115,95,.25); color: var(--bad); font-weight: 700; }
 .seg button.sel.partial { background: rgba(229,181,103,.25); color: var(--warn); font-weight: 700; }
