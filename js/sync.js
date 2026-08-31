@@ -182,6 +182,19 @@ export async function pushJob(job) {
   scheduleMirror();
 }
 
+// Catch-up: any job that never made it onto the calendar (e.g. created
+// from a stub while offline) gets pushed on the next sync.
+export async function pushUnsynced() {
+  const s = settings();
+  if (!s.calendarId) return;
+  const jobs = await store.allJobs();
+  for (const job of jobs) {
+    if (!job.calendar_event_id && job.start_date) {
+      await pushJob(job).catch(e => console.warn('catch-up push', e));
+    }
+  }
+}
+
 // ---------- Calendar: calendar -> app ----------
 export async function pullCalendar() {
   const s = settings();
