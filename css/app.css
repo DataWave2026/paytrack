@@ -12,10 +12,18 @@
   font-size: 16px;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --bg: #f4f6f8; --panel: #ffffff; --panel2: #eef1f4;
     --text: #16202a; --muted: #5c6b7a; --line: #dde3e9;
   }
+}
+:root[data-theme="light"] {
+  --bg: #f4f6f8; --panel: #ffffff; --panel2: #eef1f4;
+  --text: #16202a; --muted: #5c6b7a; --line: #dde3e9;
+}
+:root[data-theme="dark"] {
+  --bg: #101418; --panel: #1a2027; --panel2: #222a33;
+  --text: #e8edf2; --muted: #8fa0b0; --line: #2c3640;
 }
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
@@ -59,9 +67,16 @@ body {
   background: var(--panel2);
 }
 @media (max-width: 480px) {
-  body { grid-template-columns: 92px 1fr; }
+  body { grid-template-columns: 84px 1fr; }
   #tabs { padding: 8px 4px; }
   #tabs button { font-size: .82rem; padding: 10px 8px; }
+  #view { padding: 10px; }
+  .card { padding: 14px; }
+  /* Paired fields stack vertically on phones — full width, no squeeze */
+  .row2 { flex-direction: column; gap: 0; }
+  /* Earnings rows: type on its own line, numbers beneath */
+  .earnrow { grid-template-columns: 1fr 1fr 1.2fr auto; row-gap: 4px; }
+  .earnrow input:first-child { grid-column: 1 / -1; }
   .stat .num { font-size: 1.15rem; }
   .stat .lbl { font-size: .62rem; }
   table.tot { font-size: .78rem; }
