@@ -566,7 +566,9 @@ function confirmStubForm(parsed, uploaded, ocrText) {
 async function pickMatch(p, uploaded, ocrText) {
   const jobsList = await store.allJobs();
   const candidates = matchStub(p, jobsList);
-  let chosen = candidates[0]?.job || null;
+  // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
+  // default to "create a new job" so a stale selection never sticks.
+  let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
   let markPaid = true;
 
   const list = h('div', {});
@@ -816,7 +818,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
