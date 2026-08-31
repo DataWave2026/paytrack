@@ -36,12 +36,12 @@ const fmt$ = (n) => n === null || n === undefined || Number.isNaN(n) ? '—'
     ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const today = () => new Date().toISOString().slice(0, 10);
 
-function fmtRange(a, b) {
+function fmtRange(a, b, alwaysYear = false) {
   if (!a) return 'no dates';
   const cy = String(new Date().getFullYear());
   const f = (d) => {
     const opts = { month: 'short', day: 'numeric' };
-    if (!d.startsWith(cy)) opts.year = 'numeric';   // old/future years shown explicitly
+    if (alwaysYear || !d.startsWith(cy)) opts.year = 'numeric';
     return new Date(d + 'T00:00:00').toLocaleDateString('en-US', opts);
   };
   return !b || b === a ? f(a) : `${f(a)} – ${f(b)}`;
@@ -589,7 +589,7 @@ async function review() {
       }, `Import all ${queued.length} as jobs`),
       queued.map(item => h('div', { class: 'candidate' },
         h('div', { class: 'title' }, item.summary),
-        h('div', { class: 'sub muted small' }, [fmtRange(item.start, item.end), item.description].filter(Boolean).join(' · ')),
+        h('div', { class: 'sub muted small' }, [fmtRange(item.start, item.end, true), item.description].filter(Boolean).join(' · ')),
         h('div', { class: 'row2 mt' },
           h('button', {
             class: 'primary inline', onclick: async () => {

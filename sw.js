@@ -1,6 +1,6 @@
-// Offline shell: cache-first for app files, network for everything else
-// (Google APIs must never be cached).
-const CACHE = 'paytrack-v7';
+// Offline shell: NETWORK-FIRST for app files (so updates appear on the next
+// load), cache fallback when offline. Google APIs are never cached.
+const CACHE = 'paytrack-v8';
 const SHELL = [
   '.', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/auth.js', 'js/config.js', 'js/google.js', 'js/match.js',
@@ -23,12 +23,11 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;   // Google APIs etc: network only
   e.respondWith(
-    caches.match(e.request, { ignoreSearch: true }).then(hit =>
-      hit || fetch(e.request).then(resp => {
-        if (resp.ok) {
-          const copy = resp.clone();
-          caches.open(CACHE).then(c => c.put(e.request, copy));
-        }
-        return resp;
-      })));
+    fetch(e.request).then(resp => {
+      if (resp.ok) {
+        const copy = resp.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy));
+      }
+      return resp;
+    }).catch(() => caches.match(e.request, { ignoreSearch: true })));
 });
