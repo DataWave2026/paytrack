@@ -7,7 +7,8 @@ import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked', 'rate_amount',
   'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status',
-  'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'no_cal', 'notes', 'updated_at', 'deleted'];
+  'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
+  'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'period_start', 'period_end', 'hourly_rates', 'hours', 'gross', 'net', 'check_no',
   'check_date', 'matched_job_id', 'created_at', 'updated_at'];
@@ -144,25 +145,20 @@ export function jobDueDates(job) {
   return out;
 }
 
-export async function syncReminder(job) {
+async function upsertPartReminder(job, part, idField, due) {
   const s = settings();
-  if (!s.calendarId) return job;
-  const parts = job.deleted ? [] : unpaidParts(job);
-  const wanted = parts.length > 0 && !!(job.end_date || job.start_date);
-  if (!wanted) {
-    if (job.reminder_event_id) {
-      await g.deleteEvent(s.calendarId, job.reminder_event_id);
-      job.reminder_event_id = '';
+  if (!due) {
+    if (job[idField]) {
+      await g.deleteEvent(s.calendarId, job[idField]);
+      job[idField] = '';
     }
-    return job;
+    return;
   }
-  const dues = Object.values(jobDueDates(job));
-  let due = dues.sort()[0];   // earliest unpaid part drives the reminder
   // A due date in the past would never notify — nudge it to tomorrow.
   const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
   if (due < tomorrow) due = tomorrow;
   const event = {
-    summary: `💰 Follow up: ${job.project || 'job'} ${parts.join(' + ')} unpaid`,
+    summary: `💰 Follow up: ${job.project || 'job'} ${part} unpaid`,
     description: `PayTrack alert — ${jobToNote(job)}`,
     start: { dateTime: `${due}T09:00:00` },
     end: { dateTime: `${due}T09:30:00` },
@@ -172,18 +168,28 @@ export async function syncReminder(job) {
     },
     extendedProperties: { private: { paytrackReminderFor: job.id } },
   };
-  if (job.reminder_event_id) {
-    await g.patchEvent(s.calendarId, job.reminder_event_id, event)
+  if (job[idField]) {
+    await g.patchEvent(s.calendarId, job[idField], event)
       .catch(async e => {
         if (/404|410/.test(e.message)) {
           const created = await g.insertEvent(s.calendarId, event);
-          job.reminder_event_id = created.id;
+          job[idField] = created.id;
         } else throw e;
       });
   } else {
     const created = await g.insertEvent(s.calendarId, event);
-    job.reminder_event_id = created.id;
+    job[idField] = created.id;
   }
+}
+
+// Wages and gear run on separate timers, so each unpaid part gets its own
+// reminder event; paying one part clears only its reminder.
+export async function syncReminder(job) {
+  const s = settings();
+  if (!s.calendarId) return job;
+  const dues = jobDueDates(job);   // empty when deleted or undated
+  await upsertPartReminder(job, 'wages', 'reminder_event_id', dues.wages);
+  await upsertPartReminder(job, 'gear', 'gear_reminder_event_id', dues.gear);
   return job;
 }
 
