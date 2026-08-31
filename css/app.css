@@ -62,16 +62,24 @@ body {
   body { grid-template-columns: 92px 1fr; }
   #tabs { padding: 8px 4px; }
   #tabs button { font-size: .82rem; padding: 10px 8px; }
+  .stat .num { font-size: 1.15rem; }
+  .stat .lbl { font-size: .62rem; }
+  table.tot { font-size: .78rem; }
+  .job { flex-wrap: wrap; }
+  .badges { flex-direction: column; align-items: flex-end; gap: 4px; }
+  .candidate .score { float: none; display: block; margin-bottom: 3px; }
 }
 
 .card {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 18px; margin-bottom: 14px;
+  overflow-wrap: break-word; overflow-x: hidden;
 }
 .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 14px; }
 
-.stat-row { display: flex; gap: 12px; }
-.stat { flex: 1; }
+.stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.stat { flex: 1 1 90px; min-width: 0; }
+.stat .num { overflow-wrap: anywhere; }
 .stat .num { font-size: 1.5rem; font-weight: 700; }
 .stat .lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .stat.bad .num { color: var(--bad); }
@@ -82,8 +90,9 @@ body {
   padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer;
 }
 .job:last-child { border-bottom: none; }
-.job .title { font-weight: 600; }
-.job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+.job > div:first-child { min-width: 0; }
+.job .title { font-weight: 600; overflow-wrap: anywhere; }
+.job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 .badges { display: flex; gap: 6px; flex-shrink: 0; }
 .badge { font-size: .65rem; padding: 3px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
 .badge.paid { background: rgba(76,195,138,.15); color: var(--accent); }
@@ -142,7 +151,7 @@ a { color: var(--accent); }
 }
 #toast.show { opacity: 1; }
 
-.candidate { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 8px; cursor: pointer; }
+.candidate { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 8px; cursor: pointer; overflow-wrap: anywhere; }
 .candidate.best { border-color: var(--accent); }
 .candidate .score { float: right; color: var(--muted); font-size: .75rem; }
 
@@ -153,7 +162,7 @@ a { color: var(--accent); }
 
 table.tot { width: 100%; border-collapse: collapse; font-size: .9rem; }
 table.tot th { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
-table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+table.tot th, table.tot td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 table.tot th:first-child, table.tot td:first-child { text-align: left; }
 table.tot tr.sum td { font-weight: 700; border-bottom: none; }
 .spinner { display: inline-block; animation: spin 1s linear infinite; }
