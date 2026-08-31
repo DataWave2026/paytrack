@@ -31,7 +31,17 @@ const lines = (text) => text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 // Lines that are themselves field labels. Photographed stubs often OCR as a
 // label column followed by a value column, so values must be paired by
 // block position, not just "next line".
-const LABELY = /^(project|work period (start|end) date|days worked|controlling employer|payroll employer|check date|name|address|classification|job title|loan out company|earning type|time worked|rate|work location|amount|gross earnings|total deductions|net earnings|payments|primary account|total hours worked|pay (date|period)|employee)\b\s*:?$/i;
+const LABEL_PHRASES = /(project|work\s+period\s+(start|end)\s+date|days\s+worked|controlling\s+employer|payroll\s+employer|check\s+date|name|address|classification|job\s+title|loan\s+out\s+company|earning\s+type|time\s+worked|rate|work\s+location|amount|gross\s+earnings|total\s+deductions|net\s+earnings|payments|primary\s+account|total\s+hours\s+worked|pay\s+(date|period)|employee)/gi;
+
+// A "label line" may be ONE label or SEVERAL fused together — Google's OCR
+// merges adjacent cells ("Work Period End Date Days Worked"). A line is
+// labelly when nothing remains after stripping label phrases.
+const LABELY = {
+  test(l) {
+    if (!l) return false;
+    return l.replace(LABEL_PHRASES, '').replace(/[\s:]+/g, '') === '';
+  },
+};
 
 // Find "Label ... value". Layouts seen in the wild: value after the label on
 // the same line; value on the next line; or a stacked label block followed by
@@ -122,6 +132,10 @@ export function parseEarnings(text) {
           amount: amts.length ? amts[amts.length - 1] : null,
         });
       } else types.push(t[0].trim());
+    } else if (/^([\d.]+)\s*(?:hours?|hrs?)\s+\$/.test(l)) {
+      // hours and rate merged onto one line: "0.5 hours $163.64/hr …"
+      const m = l.match(/^([\d.]+)\s*(?:hours?|hrs?)\s+\$\s?([\d,.]+)\s*\/\s*(?:hr|hour)\b/i);
+      if (m) { hoursCol.push(parseFloat(m[1])); ratesCol.push(parseMoney(m[2])); }
     } else if (/^([\d.]+)\s*(?:hours?|hrs?)$/i.test(l)) {
       hoursCol.push(parseFloat(l));
     } else if (/^\$?\s?[\d,.]+\s*\/\s*(?:hr|hour)\b/i.test(l)) {
@@ -207,10 +221,17 @@ function parseWrapbook(text) {
   if (chk) { p.check_no = chk[1]; p.check_date = parseDate(chk[2]); }
   if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date/i, isDate));
 
-  // Work period = the standalone date lines that aren't the check date.
-  const dateLines = ls.map((l, i) => ({ i, d: parseDate(l), standalone: isStandaloneDate(l) }))
-    .filter(x => x.standalone && x.d);
-  const period = dateLines.filter(x => x.d !== p.check_date).map(x => x.d).sort();
+  // Work period = dates on date-only lines that aren't the check date.
+  // OCR can merge both period dates onto ONE line ("Aug 16, 2026 Aug 22, 2026").
+  const DATE_G = /([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})|(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})/g;
+  const dateLines = [];
+  ls.forEach((l, i) => {
+    const found = [...l.matchAll(DATE_G)].map(m => parseDate(m[0])).filter(Boolean);
+    if (found.length && l.replace(DATE_G, '').replace(/[\s,]+/g, '') === '') {
+      dateLines.push({ i, dates: found });
+    }
+  });
+  const period = dateLines.flatMap(x => x.dates).filter(d => d !== p.check_date).sort();
   if (period.length) {
     p.period_start = period[0];
     p.period_end = period[period.length - 1];
@@ -218,13 +239,13 @@ function parseWrapbook(text) {
 
   // Project: the line right before the period-start date. Days worked: the
   // small integer right after the period-end date.
-  const startLine = dateLines.find(x => x.d === p.period_start && x.d !== p.check_date);
+  const startLine = dateLines.find(x => x.dates.includes(p.period_start) && !x.dates.every(d => d === p.check_date));
   if (startLine) {
     const prev = ls[startLine.i - 1] || '';
     if (prev && !LABELY.test(prev) && !parseDate(prev)) p.project_name = prev;
   }
   if (!p.project_name) p.project_name = labeled(ls, /^project\b/i);
-  const endLine = [...dateLines].reverse().find(x => x.d === p.period_end && x.d !== p.check_date);
+  const endLine = [...dateLines].reverse().find(x => x.dates.includes(p.period_end) && !x.dates.every(d => d === p.check_date));
   if (endLine && /^\d{1,2}$/.test((ls[endLine.i + 1] || '').trim())) {
     p.day_count = parseInt(ls[endLine.i + 1], 10);
   }
@@ -271,7 +292,9 @@ function parseWrapbook(text) {
   for (const l of ls) {
     const ca = companyAddr(l);
     if (!ca) continue;
-    if (/wrapbook|payroll|\bdba\b/i.test(l)) continue;
+    // Skip only when the payroll processor is the company NAME itself — OCR
+    // may merge the employer's line with the payroll company's line.
+    if (/wrapbook|payroll|\bdba\b/i.test(ca[1])) continue;
     // Never pick the payee's own (loan-out) company, even on a partial match.
     const a = squash(ca[1]), b = squash(p.payee);
     if (b && (a.includes(b) || b.includes(a))) continue;
