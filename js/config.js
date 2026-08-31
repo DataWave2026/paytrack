@@ -9,8 +9,8 @@ const DEFAULTS = {
   calendarId: '',            // Google calendar to sync with
   calendarName: '',
   sheetId: '',               // "PayTrack DB" spreadsheet
-  folderId: '',              // Drive folder for paystub photos
   alertDays: 14,             // days after wrap before payment counts as overdue
+  everConnected: false,      // gate for silent background re-auth attempts
   calSyncToken: '',
   lastSheetSync: '',
 };

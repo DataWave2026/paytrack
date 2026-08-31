@@ -31,12 +31,6 @@ export async function findByName(name, mimeType, parentId) {
   return r.files?.[0] || null;
 }
 
-export async function createFolder(name, parentId) {
-  const meta = { name, mimeType: 'application/vnd.google-apps.folder' };
-  if (parentId) meta.parents = [parentId];
-  return call('https://www.googleapis.com/drive/v3/files?fields=id,name', { method: 'POST', json: meta });
-}
-
 function multipartBody(meta, file) {
   const boundary = 'paytrack' + Math.random().toString(36).slice(2);
   const pre = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: ${file.type || 'image/jpeg'}\r\n\r\n`;
@@ -45,13 +39,6 @@ function multipartBody(meta, file) {
     body: new Blob([pre, file, post]),
     contentType: `multipart/related; boundary=${boundary}`,
   };
-}
-
-export async function uploadFile(file, name, parentId) {
-  const { body, contentType } = multipartBody({ name, parents: parentId ? [parentId] : undefined }, file);
-  return call('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
-    method: 'POST', body, headers: { 'Content-Type': contentType },
-  });
 }
 
 // Drive's built-in OCR: upload the image converting it to a Google Doc,
