@@ -384,12 +384,17 @@ async function totals() {
 let stubFile = null;
 
 async function stub() {
-  const fileInput = h('input', {
-    type: 'file', accept: 'image/*,.heic,.heif,.HEIC,.HEIF,application/pdf', capture: 'environment',
-    onchange: (e) => {
-      stubFile = e.target.files[0] || null;
-      render('stub');
-    },
+  const onPick = (e) => {
+    stubFile = e.target.files[0] || null;
+    render('stub');
+  };
+  // Two separate inputs: `capture` jumps straight to the camera on phones
+  // (never showing the library), so the library/file picker must not have it.
+  const cameraInput = h('input', {
+    type: 'file', accept: 'image/*', capture: 'environment', onchange: onPick,
+  });
+  const libraryInput = h('input', {
+    type: 'file', accept: 'image/*,.heic,.heif,.HEIC,.HEIF,application/pdf', onchange: onPick,
   });
   const connected = auth.isConnected() || auth.hasCredentials();
 
@@ -397,8 +402,10 @@ async function stub() {
     h('div', { class: 'card' },
       h('h2', {}, 'Scan a paystub'),
       h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'),
-      h('label', {}, 'Take photo / choose file'),
-      fileInput,
+      h('label', {}, 'Take a photo'),
+      cameraInput,
+      h('label', {}, 'Or choose an existing photo / file'),
+      libraryInput,
       stubFile ? h('img', { class: 'stub-preview', src: URL.createObjectURL(stubFile) }) : null,
       stubFile ? h('button', {
         class: 'primary', onclick: () => runStubPipeline(stubFile),
@@ -708,7 +715,7 @@ async function settingsView() {
 
 // ---------- boot ----------
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
