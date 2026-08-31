@@ -103,7 +103,7 @@ async function home() {
           h('div', { class: 'lbl' }, 'est. wages owed'))),
     ),
     overdue.length ? h('div', { class: 'card' },
-      h('h2', {}, '⚠️ Overdue'),
+      h('h2', {}, 'Overdue'),
       overdue.map(jobRow)) : null,
     h('div', { class: 'card' },
       h('h2', {}, 'Recent jobs'),
@@ -239,7 +239,7 @@ async function stub() {
 
   return h('div', {},
     h('div', { class: 'card' },
-      h('h2', {}, '📸 Scan a paystub'),
+      h('h2', {}, 'Scan a paystub'),
       h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is archived in Drive, read with Google OCR, then matched to your jobs — you confirm everything before it counts.'),
       h('label', {}, 'Take photo / choose file'),
       fileInput,
@@ -377,7 +377,7 @@ async function review() {
   const queued = await store.allQueued();
   return h('div', {},
     h('div', { class: 'card' },
-      h('h2', {}, '📥 Calendar import'),
+      h('h2', {}, 'Calendar import'),
       h('p', { class: 'muted' }, 'Events on your calendar that look like job entries (rates, "gear", "paid"…) land here for review — nothing is imported without your OK.'),
       h('button', {
         class: 'secondary', onclick: async () => {
