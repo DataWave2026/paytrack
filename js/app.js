@@ -203,6 +203,33 @@ function addDaysStr(iso, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Mini-calendar of tappable day chips for a date range. Returns the number
+// of days rendered (0/1 = no picker needed).
+function fillDayChips(box, start, end, sel, counter) {
+  box.replaceChildren();
+  if (!start) return 0;
+  const days = [];
+  for (let d = start, i = 0; d <= (end || start) && i < 21; d = addDaysStr(d, 1), i++) days.push(d);
+  if (days.length < 2) { if (counter) counter.textContent = ''; return days.length; }
+  const upd = () => { if (counter) counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`; };
+  box.append(...days.map(d => {
+    const dt = new Date(d + 'T00:00:00');
+    const b = h('button', {
+      type: 'button', class: 'daychip' + (sel.has(d) ? ' on' : ''),
+      onclick: () => {
+        sel.has(d) ? sel.delete(d) : sel.add(d);
+        b.classList.toggle('on');
+        upd();
+      },
+    },
+      h('span', { class: 'dow' }, dt.toLocaleDateString('en-US', { weekday: 'short' })),
+      h('span', { class: 'dom' }, String(dt.getDate())));
+    return b;
+  }));
+  upd();
+  return days.length;
+}
+
 function editJob(existing) {
   const job = existing ? { ...existing } : store.blankJob();
   let weeks = 1;
@@ -213,8 +240,20 @@ function editJob(existing) {
         ? (e.target.value === '' ? null : parseFloat(e.target.value))
         : e.target.value;
       if (['gear_rate', 'days_worked', 'start_date', 'end_date'].includes(key)) gearHintUpdate();
+      if (['start_date', 'end_date'].includes(key)) updateWorkChips();
     },
   });
+
+  const workSel = new Set(job.work_dates || []);
+  const workBox = h('div', { class: 'daychips' });
+  const workCounter = h('p', { class: 'muted small' }, '');
+  const workWrap = h('div', {},
+    h('label', {}, 'Which days were actually worked? (only these get calendar events)'),
+    workBox, workCounter);
+  const updateWorkChips = () => {
+    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter);
+    workWrap.style.display = n > 1 ? '' : 'none';
+  };
 
   const hoursInput = input('rate_hours', { type: 'number', inputmode: 'numeric', placeholder: 'other' });
   const hoursSeg = segmented('hours', String(job.rate_hours || ''),
@@ -232,6 +271,7 @@ function editJob(existing) {
     [['day', 'Per day'], ['week', 'Per week']],
     v => { job.gear_period = v; gearHintUpdate(); });
   gearHintUpdate();
+  updateWorkChips();
 
   const form = h('div', { class: 'card' },
     h('h2', {}, existing ? 'Edit job' : 'New job'),
@@ -240,6 +280,7 @@ function editJob(existing) {
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'First day'), input('start_date', { type: 'date' })),
       h('div', {}, h('label', {}, 'Last day'), input('end_date', { type: 'date' }))),
+    workWrap,
     h('label', {}, 'Days actually worked (optional — for owed-wages estimate)'),
     input('days_worked', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 2' }),
     existing ? null : h('div', {},
@@ -283,6 +324,12 @@ function editJob(existing) {
         if (weeks > 1 && !job.start_date) return toast('Multi-week jobs need a first day (of week 1).');
         if (job.gear_status === 'na' && (job.gear_rate || job.gear_total)) job.gear_status = 'unpaid';
 
+        const chosenDays = [...workSel]
+          .filter(d => job.start_date && d >= job.start_date && d <= (job.end_date || job.start_date))
+          .sort();
+        job.work_dates = chosenDays;
+        if (chosenDays.length) job.days_worked = chosenDays.length;
+
         const toSave = [];
         if (!existing && weeks > 1) {
           for (let k = 0; k < weeks; k++) {
@@ -292,6 +339,8 @@ function editJob(existing) {
               project: `${job.project} (Week ${k + 1})`,
               start_date: addDaysStr(job.start_date, 7 * k),
               end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
+              work_dates: chosenDays.map(d => addDaysStr(d, 7 * k)),
+              calendar_event_ids: [],
             });
           }
         } else {
@@ -591,6 +640,24 @@ async function pickMatch(p, uploaded, ocrText) {
   const stubGear = gearOnStub(p.earnings);
   let markGearPaid = stubGear > 0;
 
+  // Worked-days picker for a NEW job — a stub's pay period often spans a
+  // whole week while only some days were worked; only tapped days go on the
+  // calendar. Preselected only when the stub says every day was worked.
+  const daySel = new Set();
+  const dayBox = h('div', { class: 'daychips' });
+  const dayCounter = h('p', { class: 'muted small' }, '');
+  let spanLen = 0;
+  if (p.period_start) {
+    for (let d = p.period_start; d <= (p.period_end || p.period_start) && spanLen < 21; d = addDaysStr(d, 1)) spanLen++;
+    if (p.day_count && p.day_count === spanLen) {
+      for (let d = p.period_start; d <= p.period_end; d = addDaysStr(d, 1)) daySel.add(d);
+    }
+  }
+  const chipCount = fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter);
+  const dayWrap = h('div', { class: 'mt' },
+    h('label', {}, `Days actually worked${p.day_count ? ` — stub says ${p.day_count}` : ''}`),
+    dayBox, dayCounter);
+
   const list = h('div', {});
   const redraw = () => {
     list.replaceChildren(
@@ -605,12 +672,14 @@ async function pickMatch(p, uploaded, ocrText) {
         class: 'candidate' + (chosen === null ? ' best' : ''),
         onclick: () => { chosen = null; redraw(); },
       }, h('div', { class: 'title' }, (chosen === null ? '✓ ' : '') + 'None of these — create a new job from this stub')));
+    dayWrap.style.display = chosen === null && chipCount > 1 ? '' : 'none';
   };
   redraw();
 
   viewEl.replaceChildren(h('div', { class: 'card' },
     h('h2', {}, candidates.length ? 'Which job is this stub for?' : 'No matching job found'),
     list,
+    dayWrap,
     h('label', { class: 'mt' },
       h('input', {
         type: 'checkbox', checked: 'checked', style: 'width:auto;margin-right:8px',
@@ -637,6 +706,13 @@ async function pickMatch(p, uploaded, ocrText) {
             notes: ['Created from paystub', p.gross ? `gross ${fmt$(p.gross)}` : '',
               p.check_no ? `check #${p.check_no}` : ''].filter(Boolean).join(' · '),
           };
+          const days = [...daySel].sort();
+          if (days.length) {
+            job.work_dates = days;
+            job.days_worked = days.length;
+            job.start_date = days[0];
+            job.end_date = days[days.length - 1];
+          }
         }
         if (markPaid) job.wages_status = 'paid';
         if (stubGear > 0 && markGearPaid) {
@@ -882,7 +958,7 @@ function applyTheme() {
 applyTheme();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
