@@ -336,11 +336,17 @@ async function pickMatch(p, uploaded, ocrText) {
       class: 'primary', onclick: async () => {
         let job = chosen;
         if (!job) {
+          // Job was never logged (user error) but the payment came through:
+          // create it from the stub and it gets pushed to the calendar as
+          // a PAID event below, so the record exists everywhere.
           job = {
             ...store.blankJob(),
             project: p.project_name || p.employer || 'Job from stub',
             company: p.employer || '',
             start_date: p.period_start || '', end_date: p.period_end || '',
+            days_worked: p.day_count || null,
+            notes: ['Created from paystub', p.gross ? `gross ${fmt$(p.gross)}` : '',
+              p.check_no ? `check #${p.check_no}` : ''].filter(Boolean).join(' · '),
           };
         }
         if (markPaid) job.wages_status = 'paid';
@@ -489,6 +495,7 @@ async function backgroundSync() {
     await auth.token();               // silent refresh if possible
     await sync.pullCalendar();
     await sync.pullSheet();
+    await sync.pushUnsynced();
   } catch (e) {
     if (e.code !== 'NEEDS_CONNECT') console.warn('sync', e);
   }
