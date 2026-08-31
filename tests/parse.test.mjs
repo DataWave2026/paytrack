@@ -164,6 +164,82 @@ $1,759.10`;
   assert.equal(p.earnings[4].hours, null);
 });
 
+test('Google OCR order: fused labels, merged dates, employer glued to payroll co', () => {
+  const text = `________________
+
+W WRAPBOOK
+Check Date
+Name
+Address
+Classification
+Job Title
+Loan Out Company
+Controlling Employer
+Payroll Employer
+Project
+Work Period Start Date
+Work Period End Date Days Worked
+Aug 25, 2026
+1234 Example Media (Doe, Jane M.), XX-XXX
+123 Example St, Los Angeles, CA, 90000-1111
+Loan Out
+Digital Imaging Tech
+1234 ExampleMedia, 123 Example St, Los Angeles, CA, 90000-1111 FEIN#: XX-XXX
+Example Pictures, 1 Studio Way, Malibu, CA, 90265 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206 New York, NY, 10003-1502, FEIN#: 82-4462453
+Ritual
+Aug 16, 2026 Aug 22, 2026
+2
+support@wrapbook.com
+1 (833) 977-2665
+Earning Type
+Time Worked
+Rate Work Location
+Amount
+Straight Time
+8.0 hours
+$81.82/hr Los Angeles, CA
+$654.55
+Straight Time
+5.0 hours
+$90.00/hr Los Angeles, CA
+$450.00
+OT x1.5
+4.0 hours
+$122.73/hr Los Angeles, CA
+$490.91
+OT X2.0
+0.5 hours $163.64/hr Los Angeles, CA
+$81.82
+Meal Penalties
+$81.82
+Total Hours Worked
+17.5
+Gross Earnings: Total Deductions: Net Earnings:
+Amount
+$1,759.10
+$0.00
+$1,759.10
+Payments
+Amount
+Primary Account:
+Paid by Check #1001262960 on Aug 25, 2026
+$1,759.10`;
+  const p = parseStub(text);
+  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.payee, '1234 Example Media');
+  assert.equal(p.job_title, 'Digital Imaging Tech');
+  assert.equal(p.classification, 'Loan Out');
+  assert.equal(p.employer, 'Example Pictures');
+  assert.equal(p.period_start, '2026-08-16');
+  assert.equal(p.period_end, '2026-08-22');
+  assert.equal(p.check_date, '2026-08-25');
+  assert.equal(p.day_count, 2);
+  assert.equal(p.gross, 1759.10);
+  assert.equal(p.net, 1759.10);
+  assert.equal(p.earnings.length, 5);
+  assert.deepEqual(p.earnings[3], { type: 'OT X2.0', hours: 0.5, rate: 163.64, amount: 81.82 });
+});
+
 test('generic parser survives an unknown vendor', () => {
   const text = `ACME PAYROLL SERVICES
 Pay Date: 09/04/2026
