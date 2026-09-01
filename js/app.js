@@ -230,26 +230,34 @@ async function jobs() {
   const monthLabel = (k) => k === 'none' ? 'No dates'
     : new Date(k + '-02T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
-  // Month cards carry their subtotal in the header; a slim year card with the
-  // year's income appears at each year boundary.
-  const cards = [];
-  let lastYear = '';
-  for (const k of keys) {
-    const year = k === 'none' ? '' : k.slice(0, 4);
-    if (year && year !== lastYear) {
-      lastYear = year;
-      const yearJobs = jobs.filter(j => j.start_date?.startsWith(year));
-      const ys = sumJobs(yearJobs, stubsByJob);
-      cards.push(h('div', { class: 'card mt' },
-        h('h2', { style: 'margin-bottom:0' },
-          `${year} — ${ys.est ? '~' : ''}${fmt$(ys.total)} (${fmt$(ys.wages)} wages · ${fmt$(ys.gear)} gear)`)));
-    }
+  // Collapsible months nested inside collapsible years, each carrying its
+  // income subtotal on the header so collapsed bars still tell the story.
+  const openDetails = (key, set, children, extraClass = '') => {
+    const det = h('details', { class: 'card mt ' + extraClass }, ...children);
+    if (set.has(key)) det.setAttribute('open', '');
+    det.addEventListener('toggle', () => det.open ? set.add(key) : set.delete(key));
+    return det;
+  };
+  const monthDetails = (k) => {
     const ms = sumJobs(groups[k], stubsByJob);
-    cards.push(h('div', { class: 'card mt' },
-      h('h2', {}, `${monthLabel(k)} (${groups[k].length})${ms.total ? ` · ${ms.est ? '~' : ''}${fmt$(ms.total)}` : ''}`),
-      groups[k].map(j => jobRow(j, stubsByJob)),
-      listTotalsLine(groups[k], stubsByJob, 'Month total')));
-  }
+    return openDetails(k, openMonths, [
+      h('summary', {}, `${monthLabel(k)} (${groups[k].length})${ms.total ? ` · ${ms.est ? '~' : ''}${fmt$(ms.total)}` : ''}`),
+      ...groups[k].map(j => jobRow(j, stubsByJob)),
+      listTotalsLine(groups[k], stubsByJob, 'Month total'),
+    ], 'inner');
+  };
+  const byYear = {};
+  for (const k of keys) (byYear[k === 'none' ? 'none' : k.slice(0, 4)] ||= []).push(k);
+  const yearKeys = Object.keys(byYear).filter(y => y !== 'none').sort().reverse();
+  const cards = yearKeys.map(year => {
+    const yearJobs = jobs.filter(j => j.start_date?.startsWith(year));
+    const ys = sumJobs(yearJobs, stubsByJob);
+    return openDetails(year, openYears, [
+      h('summary', {}, `${year} — ${ys.est ? '~' : ''}${fmt$(ys.total)} (${fmt$(ys.wages)} wages · ${fmt$(ys.gear)} gear)`),
+      ...byYear[year].map(monthDetails),
+    ]);
+  });
+  if (byYear.none) cards.push(...byYear.none.map(monthDetails));
 
   return h('div', {},
     h('button', { class: 'primary', onclick: () => editJob(null) }, '+ Add job'),
@@ -550,6 +558,9 @@ async function editJob(existing) {
 // ---------- totals ----------
 let totalsYear = new Date().getFullYear();
 let totalsOpen = false;
+// Jobs page fold state: current month + year start open, the past starts folded.
+const openMonths = new Set([new Date().toISOString().slice(0, 7)]);
+const openYears = new Set([String(new Date().getFullYear())]);
 
 // Actual stub gross when paystubs are matched to the job; rate × days otherwise.
 function jobWages(job, stubsByJob) {
@@ -1228,7 +1239,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v48';
+const APP_VERSION = 'v49';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

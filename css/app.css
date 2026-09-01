@@ -103,6 +103,8 @@ details.card summary {
   color: var(--muted); cursor: pointer; user-select: none;
 }
 details.card[open] summary { margin-bottom: 14px; }
+details.card.inner { background: var(--panel2); margin: 10px 0; padding: 12px 14px; }
+details.card.inner .job.sumrow { background: rgba(127, 127, 127, .2); }
 
 .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .stat { flex: 1 1 90px; min-width: 0; }
@@ -116,8 +118,14 @@ details.card[open] summary { margin-bottom: 14px; }
   padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer;
 }
 .job:last-child { border-bottom: none; }
-/* Totals row: bright rule above for clear separation from the list */
-.job.sumrow { border-top: 2px solid var(--text); border-bottom: none; }
+/* Totals row: a slightly lighter box sets it apart from the list */
+.job.sumrow {
+  border-bottom: none;
+  background: rgba(127, 127, 127, .16);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
 .job:has(+ .job.sumrow) { border-bottom: none; }
 .job > div:first-child { min-width: 0; }
 .job .title { font-weight: 600; overflow-wrap: break-word; }
