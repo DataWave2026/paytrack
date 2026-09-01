@@ -106,7 +106,9 @@ export async function putJob(job, { silent = false } = {}) {
   return job;
 }
 
-// Merge a record from a remote source (Sheet); newest updated_at wins.
+// Merge a record from a remote source (Sheet); newest updated_at wins —
+// EXCEPT deletion, which is a tombstone: once either side has deleted a
+// record, no sync may resurrect it.
 export async function mergeRecord(storeName, rec) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -115,7 +117,10 @@ export async function mergeRecord(storeName, rec) {
     const g = s.get(rec.id);
     g.onsuccess = () => {
       const local = g.result;
-      if (!local || (rec.updated_at || '') > (local.updated_at || '')) s.put(rec);
+      if (!local) { s.put(rec); return; }
+      if (local.deleted) return;                       // tombstone wins
+      if (rec.deleted) { s.put({ ...local, ...rec, deleted: true }); return; }
+      if ((rec.updated_at || '') > (local.updated_at || '')) s.put(rec);
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
