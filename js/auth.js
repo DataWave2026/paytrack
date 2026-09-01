@@ -55,6 +55,17 @@ function requestToken(promptMode) {
 // Interactive connect (user taps the button — may show Google popup).
 export function connect() { return requestToken(''); }
 
+// Token is live but inside the renewal window (Google caps tokens at ~1h).
+export function needsRefreshSoon(windowMs = 10 * 60 * 1000) {
+  return !!accessToken && Date.now() > expiresAt - windowMs;
+}
+
+// Attempt a no-UI refresh; succeeds when called during a user gesture with an
+// active Google session. Never throws.
+export async function trySilentRefresh() {
+  try { await requestToken('none'); return true; } catch { return false; }
+}
+
 // Get a token for an API call; tries silent refresh, otherwise throws
 // NEEDS_CONNECT so the UI can show the reconnect button.
 export async function token() {

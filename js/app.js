@@ -80,6 +80,19 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-view]');
   if (btn) render(btn.dataset.view);
 });
+
+// Google tokens die after ~1h and browsers only allow the refresh popup
+// during a user gesture — so ride along on ordinary taps: whenever the
+// session is expired or close to it, renew invisibly inside the tap.
+let lastRefreshTry = 0;
+document.addEventListener('click', () => {
+  if (!settings().everConnected) return;
+  if (auth.isConnected() && !auth.needsRefreshSoon()) return;
+  const now = Date.now();
+  if (now - lastRefreshTry < 60000) return;
+  lastRefreshTry = now;
+  auth.trySilentRefresh().then(ok => { if (ok) backgroundSync(); });
+}, true);
 store.bus.addEventListener('change', () => render());
 
 // ---------- home ----------
@@ -1049,7 +1062,7 @@ eyeBtn.addEventListener('click', () => {
 drawEye();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v43';
+const APP_VERSION = 'v44';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
