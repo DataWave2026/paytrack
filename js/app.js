@@ -115,6 +115,9 @@ async function home() {
   const overdue = jobs.filter(isOverdue);
   const upcoming = jobs.filter(j => j.start_date && j.start_date > today())
     .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  // Recent = completed work only: wrapped on or before today, never holds or
+  // future bookings (those live in Upcoming).
+  const recent = real.filter(j => (j.end_date || j.start_date) && (j.end_date || j.start_date) <= today());
   const gearOut = unpaidGear.reduce((s, j) => s + (j.gear_total || 0), 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + (j.rate_amount ? j.rate_amount * jobDays(j) : 0), 0);
 
@@ -174,10 +177,10 @@ async function home() {
       overdue.map(j => jobRow(j, stubsByJob))) : null,
     h('div', { class: 'card' },
       h('h2', {}, 'Recent jobs'),
-      jobs.length ? [
-        ...jobs.slice(0, 8).map(j => jobRow(j, stubsByJob)),
-        listTotalsLine(jobs.slice(0, 8), stubsByJob, 'Total (listed)'),
-      ] : h('p', { class: 'muted' }, 'No jobs yet. Add one in the Jobs tab, or import your calendar history from the Review tab.')),
+      recent.length ? [
+        ...recent.slice(0, 8).map(j => jobRow(j, stubsByJob)),
+        listTotalsLine(recent.slice(0, 8), stubsByJob, 'Total (listed)'),
+      ] : h('p', { class: 'muted' }, 'No completed jobs yet. Add one in the Jobs tab, or import your calendar history from the Import tab.')),
   );
 }
 
@@ -1240,7 +1243,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v50';
+const APP_VERSION = 'v51';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
