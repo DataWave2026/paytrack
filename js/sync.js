@@ -308,7 +308,11 @@ export async function pullCalendar() {
     } else if (ev.status !== 'cancelled'
         && !ev.extendedProperties?.private?.paytrackReminderFor
         && looksLikeJob(ev.summary, ev.description)) {
-      await store.queueImport(eventToQueued(ev));
+      // Only recent events get auto-queued — an OLD event that merely got
+      // touched shouldn't resurface as an import suggestion.
+      const q = eventToQueued(ev);
+      const cutoff = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+      if ((q.start || '') >= cutoff) await store.queueImport(q);
     }
   }
   saveSettings({ lastCalPull: store.now() });
@@ -326,11 +330,12 @@ function eventToQueued(ev) {
 }
 
 // One-time scan of past events that look like job entries.
-export async function historyImportScan(fromYear = 2018) {
+export async function historyImportScan(fromDate) {
   const s = settings();
   if (!s.calendarId) throw new Error('Pick a calendar in Setup first.');
+  const from = fromDate || `${new Date().getFullYear()}-01-01`;
   const { items } = await g.listEvents(s.calendarId, {
-    timeMin: `${fromYear}-01-01T00:00:00Z`, singleEvents: 'true', orderBy: 'startTime',
+    timeMin: `${from}T00:00:00Z`, singleEvents: 'true', orderBy: 'startTime',
   });
   let queued = 0;
   const existing = await store.allJobs({ includeDeleted: true });
