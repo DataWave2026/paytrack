@@ -174,8 +174,10 @@ async function home() {
       overdue.map(j => jobRow(j, stubsByJob))) : null,
     h('div', { class: 'card' },
       h('h2', {}, 'Recent jobs'),
-      jobs.length ? jobs.slice(0, 8).map(j => jobRow(j, stubsByJob))
-        : h('p', { class: 'muted' }, 'No jobs yet. Add one in the Jobs tab, or import your calendar history from the Review tab.')),
+      jobs.length ? [
+        ...jobs.slice(0, 8).map(j => jobRow(j, stubsByJob)),
+        listTotalsLine(jobs.slice(0, 8), stubsByJob, 'Total (listed)'),
+      ] : h('p', { class: 'muted' }, 'No jobs yet. Add one in the Jobs tab, or import your calendar history from the Review tab.')),
   );
 }
 
@@ -221,11 +223,40 @@ async function jobs() {
   for (const s of stubs) {
     if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
   }
+  // Group by year-month (newest first); undated jobs last.
+  const groups = {};
+  for (const j of jobs) (groups[j.start_date ? j.start_date.slice(0, 7) : 'none'] ||= []).push(j);
+  const keys = Object.keys(groups).sort().reverse();
+  const monthLabel = (k) => k === 'none' ? 'No dates'
+    : new Date(k + '-02T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+  // Month cards carry their subtotal in the header; a slim year card with the
+  // year's income appears at each year boundary.
+  const cards = [];
+  let lastYear = '';
+  for (const k of keys) {
+    const year = k === 'none' ? '' : k.slice(0, 4);
+    if (year && year !== lastYear) {
+      lastYear = year;
+      const yearJobs = jobs.filter(j => j.start_date?.startsWith(year));
+      const ys = sumJobs(yearJobs, stubsByJob);
+      cards.push(h('div', { class: 'card mt' },
+        h('h2', { style: 'margin-bottom:0' },
+          `${year} — ${ys.est ? '~' : ''}${fmt$(ys.total)} (${fmt$(ys.wages)} wages · ${fmt$(ys.gear)} gear)`)));
+    }
+    const ms = sumJobs(groups[k], stubsByJob);
+    cards.push(h('div', { class: 'card mt' },
+      h('h2', {}, `${monthLabel(k)} (${groups[k].length})${ms.total ? ` · ${ms.est ? '~' : ''}${fmt$(ms.total)}` : ''}`),
+      groups[k].map(j => jobRow(j, stubsByJob)),
+      listTotalsLine(groups[k], stubsByJob, 'Month total')));
+  }
+
   return h('div', {},
     h('button', { class: 'primary', onclick: () => editJob(null) }, '+ Add job'),
-    h('div', { class: 'card mt' },
+    jobs.length ? cards : h('div', { class: 'card mt' }, h('p', { class: 'muted' }, 'Nothing yet.')),
+    jobs.length ? h('div', { class: 'card' },
       h('h2', {}, `All jobs (${jobs.length})`),
-      jobs.length ? jobs.map(j => jobRow(j, stubsByJob)) : h('p', { class: 'muted' }, 'Nothing yet.')),
+      listTotalsLine(jobs, stubsByJob, 'Grand total (excl. holds)')) : null,
   );
 }
 
@@ -281,7 +312,54 @@ function fillDayChips(box, start, end, sel, counter) {
   return days.length;
 }
 
-function editJob(existing) {
+// Wages (actual or estimate) + gear summed over a list of jobs, holds excluded.
+function sumJobs(list, stubsByJob) {
+  let wages = 0, gear = 0, est = false;
+  for (const j of list) {
+    if (j.job_status === 'hold') continue;
+    const w = jobWages(j, stubsByJob);
+    if (w) { wages += w.amount; if (!w.actual) est = true; }
+    if (j.gear_total) gear += j.gear_total;
+  }
+  return { wages, gear, total: wages + gear, est };
+}
+
+// Sum line rendered under a job list.
+function listTotalsLine(list, stubsByJob, label = 'Total') {
+  const { wages, gear, total, est } = sumJobs(list, stubsByJob);
+  if (!total) return null;
+  return h('div', { class: 'job', style: 'cursor:default' },
+    h('div', {},
+      h('div', { class: 'title' }, label),
+      h('div', { class: 'sub' }, `${est ? '~' : ''}${fmt$(wages)} wages · ${fmt$(gear)} gear`)),
+    h('div', { class: 'badges', style: 'font-weight:700' }, `${est ? '~' : ''}${fmt$(total)}`));
+}
+
+// When a job goes away but its stubs (payment records) shouldn't: move them
+// to another job with the same title, carrying gear-paid state along.
+async function repointStubs(job) {
+  const stubs = (await store.allStubs()).filter(s => s.matched_job_id === job.id);
+  if (!stubs.length) return;
+  const sq = (s) => (s || '').replace(/\s|\(.*\)/g, '').toLowerCase();
+  const target = (await store.allJobs()).find(o => o.id !== job.id && sq(o.project) === sq(job.project));
+  if (!target) return;
+  let gearMoved = 0;
+  for (const s of stubs) {
+    s.matched_job_id = target.id;
+    gearMoved += gearOnStub(s.earnings);
+    await store.putStub(s);
+  }
+  if (gearMoved > 0) {
+    if (target.gear_total === null || target.gear_total === undefined) target.gear_total = gearMoved;
+    if (target.gear_status === 'na' || target.gear_status === 'unpaid') target.gear_status = 'paid';
+    await store.putJob(target, { silent: true });
+    if (auth.isConnected()) sync.pushJob(target).catch(() => {});
+  }
+  log('stubRepoint', { n: stubs.length, to: target.project, gearMoved });
+  toast(`${stubs.length} payment record${stubs.length === 1 ? '' : 's'} moved to the other "${target.project}" job.`, 4500);
+}
+
+async function editJob(existing) {
   const job = existing ? { ...existing } : store.blankJob();
   let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
@@ -413,6 +491,7 @@ function editJob(existing) {
     existing ? h('button', {
       class: 'secondary', onclick: async () => {
         if (!confirm('Remove this job from the app but KEEP its calendar event?')) return;
+        await repointStubs(job);
         job.deleted = true;
         // Forget the event links so deletion never touches the calendar.
         job.calendar_event_id = '';
@@ -426,6 +505,7 @@ function editJob(existing) {
     existing ? h('button', {
       class: 'danger', onclick: async () => {
         if (!confirm('Delete this job AND its calendar event?')) return;
+        await repointStubs(job);
         job.deleted = true;
         await store.putJob(job);
         if (auth.isConnected()) sync.pushJob(job).catch(() => {});
@@ -434,7 +514,36 @@ function editJob(existing) {
     }, 'Delete job + calendar event') : null,
     h('button', { class: 'secondary', onclick: () => render('jobs') }, 'Cancel'),
   );
-  viewEl.replaceChildren(form);
+  // Per-job breakdown so the math can be checked at a glance.
+  let breakdown = null;
+  if (existing) {
+    const stubs = (await store.allStubs()).filter(s => s.matched_job_id === job.id);
+    const rows = stubs.filter(s => s.gross !== null && s.gross !== undefined).map(s => {
+      const gearPart = gearOnStub(s.earnings);
+      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}`,
+        gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart) };
+    });
+    const wagesActual = rows.reduce((a, r) => a + r.wages, 0);
+    const est = !wagesActual && job.rate_amount ? job.rate_amount * jobDays(job) : null;
+    const wages = wagesActual || est || 0;
+    const total = wages + (job.gear_total || 0);
+    if (rows.length || total) {
+      breakdown = h('div', { class: 'card' },
+        h('h2', {}, 'Breakdown'),
+        rows.length ? h('table', { class: 'tot' },
+          h('tr', {}, h('th', {}, 'Payment'), h('th', {}, 'Gross'), h('th', {}, 'Gear'), h('th', {}, 'Wages')),
+          rows.map(r => h('tr', {},
+            h('td', {}, r.label), h('td', {}, fmt$(r.gross)),
+            h('td', {}, r.gear ? fmt$(r.gear) : '—'), h('td', {}, r.wages ? fmt$(r.wages) : '—')))) : null,
+        h('table', { class: 'tot', style: 'margin-top:8px' },
+          h('tr', {}, h('td', {}, `Wages${wagesActual ? '' : est ? ' (est. rate × days)' : ''}`),
+            h('td', {}, `${wagesActual ? '' : est ? '~' : ''}${fmt$(wages || null)}`)),
+          h('tr', {}, h('td', {}, `Gear (${job.gear_status})`), h('td', {}, fmt$(job.gear_total))),
+          h('tr', { class: 'sum' }, h('td', {}, 'TOTAL'),
+            h('td', {}, `${wagesActual ? '' : est ? '~' : ''}${fmt$(total || null)}`))));
+    }
+  }
+  viewEl.replaceChildren(...(breakdown ? [breakdown] : []), form);
   viewEl.scrollTop = 0;
 }
 
@@ -1119,7 +1228,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v46';
+const APP_VERSION = 'v47';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
