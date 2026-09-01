@@ -179,6 +179,16 @@ function jobRow(job, stubsByJob) {
         job.gear_total ? `gear ${fmt$(job.gear_total)}` : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'badges' },
       job.job_status === 'hold' ? h('span', { class: 'badge partial' }, 'HOLD') : null,
+      job.job_status === 'hold' ? h('button', {
+        class: 'inline secondary', style: 'font-size:.7rem;padding:4px 9px',
+        onclick: async (e) => {
+          e.stopPropagation();
+          job.job_status = 'confirmed';
+          await store.putJob(job);
+          if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+          toast(`${job.project} confirmed — now a tracked job.`);
+        },
+      }, 'Confirm') : null,
       statusBadge('wages', job.wages_status),
       statusBadge('gear', job.gear_status)));
 }
@@ -1041,7 +1051,7 @@ eyeBtn.addEventListener('click', () => {
 drawEye();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v41';
+const APP_VERSION = 'v42';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
