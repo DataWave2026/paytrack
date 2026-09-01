@@ -98,6 +98,11 @@ body {
   overflow-wrap: break-word; overflow-x: hidden;
 }
 .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 14px; }
+details.card summary {
+  font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); cursor: pointer; user-select: none;
+}
+details.card[open] summary { margin-bottom: 14px; }
 
 .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .stat { flex: 1 1 90px; min-width: 0; }
