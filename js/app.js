@@ -427,7 +427,7 @@ async function editJob(existing) {
     segmented('jobstatus', job.job_status || 'confirmed',
       [['confirmed', 'Confirmed'], ['hold', 'Hold / potential']],
       v => job.job_status = v),
-    h('label', {}, 'Project / show'), input('project', { placeholder: 'e.g. Ritual' }),
+    h('label', {}, 'Project / show'), input('project', { placeholder: 'e.g. Riverton' }),
     h('label', {}, 'Company (optional)'), input('company', { placeholder: 'production co / who pays' }),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'First day'), input('start_date', { type: 'date' })),
@@ -1250,7 +1250,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v52';
+const APP_VERSION = 'v53';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
