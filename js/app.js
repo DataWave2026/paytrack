@@ -405,14 +405,27 @@ function editJob(existing) {
       },
     }, 'Save job'),
     existing ? h('button', {
+      class: 'secondary', onclick: async () => {
+        if (!confirm('Remove this job from the app but KEEP its calendar event?')) return;
+        job.deleted = true;
+        // Forget the event links so deletion never touches the calendar.
+        job.calendar_event_id = '';
+        job.calendar_event_ids = [];
+        await store.putJob(job);
+        if (auth.isConnected()) sync.pushJob(job).catch(() => {});  // clears reminders only
+        toast('Removed from the app; calendar untouched.');
+        render('jobs');
+      },
+    }, 'Remove from app (keep calendar event)') : null,
+    existing ? h('button', {
       class: 'danger', onclick: async () => {
-        if (!confirm('Delete this job (and its calendar event)?')) return;
+        if (!confirm('Delete this job AND its calendar event?')) return;
         job.deleted = true;
         await store.putJob(job);
         if (auth.isConnected()) sync.pushJob(job).catch(() => {});
         render('jobs');
       },
-    }, 'Delete job') : null,
+    }, 'Delete job + calendar event') : null,
     h('button', { class: 'secondary', onclick: () => render('jobs') }, 'Cancel'),
   );
   viewEl.replaceChildren(form);
@@ -867,16 +880,22 @@ async function review() {
     h('div', { class: 'card' },
       h('h2', {}, 'Calendar import'),
       h('p', { class: 'muted' }, 'Events on your calendar that look like job entries (rates, "gear", "paid"…) land here for review — nothing is imported without your OK.'),
-      h('button', {
-        class: 'secondary', onclick: async () => {
-          try {
-            toast('Scanning calendar history…');
-            const n = await sync.historyImportScan();
-            toast(n ? `Found ${n} job-looking event${n > 1 ? 's' : ''} to review.` : 'No new job-looking events found.');
-            render('review');
-          } catch (e) { toast(e.message, 6000); }
-        },
-      }, 'Scan calendar history'),
+      h('label', {}, 'Scan events starting from'),
+      (() => {
+        const fromInput = h('input', { type: 'date', value: `${new Date().getFullYear()}-01-01` });
+        return h('div', {},
+          fromInput,
+          h('button', {
+            class: 'secondary', onclick: async () => {
+              try {
+                toast('Scanning calendar…');
+                const n = await sync.historyImportScan(fromInput.value || undefined);
+                toast(n ? `Found ${n} job-looking event${n > 1 ? 's' : ''} to review.` : 'No new job-looking events found.');
+                render('review');
+              } catch (e) { toast(e.message, 6000); }
+            },
+          }, 'Scan calendar'));
+      })(),
       h('label', {}, 'Or import an events file (.json)'),
       h('input', {
         type: 'file', accept: '.json,application/json',
@@ -903,6 +922,13 @@ async function review() {
       })),
     queued.length ? h('div', { class: 'card' },
       h('h2', {}, `To review (${queued.length})`),
+      h('button', {
+        class: 'secondary', style: 'margin-top:0', onclick: async () => {
+          for (const item of await store.allQueued()) await store.dequeueImport(item.id);
+          toast('Queue cleared — nothing was imported.');
+          render('review');
+        },
+      }, 'Clear queue (import nothing)'),
       h('button', {
         class: 'primary', onclick: async () => {
           const items = await store.allQueued();
@@ -1062,7 +1088,7 @@ eyeBtn.addEventListener('click', () => {
 drawEye();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v44';
+const APP_VERSION = 'v45';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
