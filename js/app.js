@@ -70,6 +70,13 @@ function isOverdue(job) {
   return Object.values(sync.jobDueDates(job)).some(d => d < today());
 }
 
+// Money is only OWED once the work has happened — a future-dated job's
+// unpaid amounts don't count until its last day has passed.
+function isWrapped(j) {
+  const d = j.end_date || j.start_date;
+  return !d || d <= today();
+}
+
 // ---------- views ----------
 let currentView = 'home';
 const views = { home, jobs, stub, review, settings: settingsView };
@@ -110,8 +117,8 @@ async function home() {
     if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
   }
   const real = jobs.filter(j => j.job_status !== 'hold');
-  const unpaidWages = real.filter(j => j.wages_status !== 'paid');
-  const unpaidGear = real.filter(j => j.gear_status !== 'paid' && j.gear_status !== 'na');
+  const unpaidWages = real.filter(j => isWrapped(j) && j.wages_status !== 'paid');
+  const unpaidGear = real.filter(j => isWrapped(j) && j.gear_status !== 'paid' && j.gear_status !== 'na');
   const overdue = jobs.filter(isOverdue);
   const upcoming = jobs.filter(j => j.start_date && j.start_date > today())
     .sort((a, b) => a.start_date.localeCompare(b.start_date));
@@ -134,9 +141,9 @@ async function home() {
     };
     for (const j of real.filter(x => x.start_date?.startsWith(m))) {
       const w = jobWages(j, stubsByJob);
-      if (w) { if (j.wages_status === 'paid') paidBucket(j, w.amount); else due += w.amount; }
+      if (w) { if (j.wages_status === 'paid') paidBucket(j, w.amount); else if (isWrapped(j)) due += w.amount; }
       if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
-        if (j.gear_status === 'paid') paidBucket(j, j.gear_total); else due += j.gear_total;
+        if (j.gear_status === 'paid') paidBucket(j, j.gear_total); else if (isWrapped(j)) due += j.gear_total;
       }
     }
     return { label: d.toLocaleString('en-US', { month: 'long' }), me, co, un, due };
@@ -598,11 +605,11 @@ function totalsCard(jobsAll, stubsByJob) {
     if (w) {
       row.wages += w.amount;
       if (!w.actual) estimated++;
-      if (j.wages_status === 'paid') acc.wagesPaid += w.amount; else acc.wagesDue += w.amount;
+      if (j.wages_status === 'paid') acc.wagesPaid += w.amount; else if (isWrapped(j)) acc.wagesDue += w.amount;
     } else noAmount++;
     if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
       row.gear += j.gear_total;
-      if (j.gear_status === 'paid') acc.gearPaid += j.gear_total; else acc.gearDue += j.gear_total;
+      if (j.gear_status === 'paid') acc.gearPaid += j.gear_total; else if (isWrapped(j)) acc.gearDue += j.gear_total;
     }
   }
   const monthKeys = Object.keys(months).sort();
@@ -1243,7 +1250,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v51';
+const APP_VERSION = 'v52';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
