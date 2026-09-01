@@ -66,7 +66,7 @@ function isOverdue(job) {
 
 // ---------- views ----------
 let currentView = 'home';
-const views = { home, jobs, stub, totals, review, settings: settingsView };
+const views = { home, jobs, stub, review, settings: settingsView };
 
 async function render(name) {
   currentView = name || currentView;
@@ -146,6 +146,7 @@ async function home() {
           h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—')))),
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
+    totalsCard(jobs, stubsByJob),
     upcoming.length ? h('div', { class: 'card' },
       h('h2', {}, 'Upcoming'),
       upcoming.slice(0, 6).map(j => jobRow(j, stubsByJob))) : null,
@@ -407,6 +408,7 @@ function editJob(existing) {
 
 // ---------- totals ----------
 let totalsYear = new Date().getFullYear();
+let totalsOpen = false;
 
 // Actual stub gross when paystubs are matched to the job; rate × days otherwise.
 function jobWages(job, stubsByJob) {
@@ -424,13 +426,9 @@ function jobWages(job, stubsByJob) {
   return null;
 }
 
-async function totals() {
-  const jobs = (await store.allJobs()).filter(j => j.start_date);
-  const stubs = await store.allStubs();
-  const stubsByJob = {};
-  for (const s of stubs) {
-    if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
-  }
+// Year totals, rendered as a collapsible card on Home.
+function totalsCard(jobsAll, stubsByJob) {
+  const jobs = jobsAll.filter(j => j.start_date);
   const years = [...new Set(jobs.map(j => j.start_date.slice(0, 4)))].sort().reverse();
   if (years.length && !years.includes(String(totalsYear))) totalsYear = Number(years[0]);
 
@@ -453,18 +451,16 @@ async function totals() {
   }
   const monthKeys = Object.keys(months).sort();
   const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'short' });
-  const yearSeg = h('div', { class: 'seg' },
+  const yearSeg = h('div', { class: 'seg', style: 'margin-bottom:12px' },
     years.map(y => h('button', {
       class: String(totalsYear) === y ? 'sel' : '',
-      onclick: () => { totalsYear = Number(y); render('totals'); },
+      onclick: () => { totalsYear = Number(y); totalsOpen = true; render('home'); },
     }, y)));
 
-  return h('div', {},
-    h('div', { class: 'card' },
-      h('h2', {}, 'Year'),
-      years.length ? yearSeg : h('p', { class: 'muted' }, 'No dated jobs yet.')),
-    h('div', { class: 'card' },
-      h('h2', {}, `${totalsYear} totals`),
+  const details = h('details', { class: 'card' },
+    h('summary', {}, `Year totals — ${totalsYear}`),
+    years.length > 1 ? yearSeg : null,
+    h('div', {},
       h('div', { class: 'stat-row' },
         h('div', { class: 'stat ok' },
           h('div', { class: 'num' }, fmt$(acc.wagesPaid)),
@@ -478,9 +474,8 @@ async function totals() {
           h('div', { class: 'lbl' }, 'wages still owed')),
         h('div', { class: 'stat ' + (acc.gearDue ? 'bad' : '') },
           h('div', { class: 'num' }, fmt$(acc.gearDue)),
-          h('div', { class: 'lbl' }, 'gear still owed')))),
-    h('div', { class: 'card' },
-      h('h2', {}, 'By month'),
+          h('div', { class: 'lbl' }, 'gear still owed'))),
+      h('h2', { class: 'mt', style: 'margin-top:16px' }, 'By month'),
       monthKeys.length ? h('table', { class: 'tot' },
         h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Wages'), h('th', {}, 'Gear'), h('th', {}, 'Total')),
         monthKeys.map(m => h('tr', {},
@@ -498,6 +493,9 @@ async function totals() {
         [estimated ? `${estimated} job${estimated === 1 ? '' : 's'} counted at rate × days (no stub matched yet).` : '',
           noAmount ? `${noAmount} job${noAmount === 1 ? '' : 's'} with no amounts not included.` : ''].filter(Boolean).join(' ')) : null),
   );
+  if (totalsOpen) details.setAttribute('open', '');
+  details.addEventListener('toggle', () => { totalsOpen = details.open; });
+  return details;
 }
 
 // ---------- paystub ----------
@@ -1051,7 +1049,7 @@ eyeBtn.addEventListener('click', () => {
 drawEye();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v42';
+const APP_VERSION = 'v43';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
