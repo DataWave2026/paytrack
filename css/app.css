@@ -116,6 +116,9 @@ details.card[open] summary { margin-bottom: 14px; }
   padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer;
 }
 .job:last-child { border-bottom: none; }
+/* Totals row: bright rule above for clear separation from the list */
+.job.sumrow { border-top: 2px solid var(--text); border-bottom: none; }
+.job:has(+ .job.sumrow) { border-bottom: none; }
 .job > div:first-child { min-width: 0; }
 .job .title { font-weight: 600; overflow-wrap: break-word; }
 .job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; overflow-wrap: break-word; }

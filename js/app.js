@@ -328,7 +328,7 @@ function sumJobs(list, stubsByJob) {
 function listTotalsLine(list, stubsByJob, label = 'Total') {
   const { wages, gear, total, est } = sumJobs(list, stubsByJob);
   if (!total) return null;
-  return h('div', { class: 'job', style: 'cursor:default' },
+  return h('div', { class: 'job sumrow', style: 'cursor:default' },
     h('div', {},
       h('div', { class: 'title' }, label),
       h('div', { class: 'sub' }, `${est ? '~' : ''}${fmt$(wages)} wages · ${fmt$(gear)} gear`)),
@@ -1228,7 +1228,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v47';
+const APP_VERSION = 'v48';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
