@@ -211,8 +211,9 @@ function jobRow(job, stubsByJob) {
           toast(`${job.project} confirmed — now a tracked job.`);
         },
       }, 'Confirm') : null,
-      statusBadge('wages', job.wages_status),
-      statusBadge('gear', job.gear_status)));
+      // A hold isn't an official job yet: neutral "wages: — / gear: —" until confirmed.
+      statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
+      statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status)));
 }
 
 // ---------- jobs ----------
@@ -1239,7 +1240,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v49';
+const APP_VERSION = 'v50';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
