@@ -286,7 +286,9 @@ export async function pullCalendar() {
     const jobId = ev.extendedProperties?.private?.paytrackJobId;
     if (jobId) {
       const job = await store.getJob(jobId);
-      if (!job) continue;
+      // A deleted job stays deleted — calendar edits must not revive or
+      // touch it (its event may deliberately outlive it).
+      if (!job || job.deleted) continue;
       if ((ev.updated || '') <= (job.updated_at || '')) continue;  // our own push
       if (ev.status === 'cancelled') { job.deleted = true; }
       else {

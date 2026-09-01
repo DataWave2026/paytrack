@@ -1,10 +1,10 @@
 // Offline shell: NETWORK-FIRST for app files (so updates appear on the next
 // load), cache fallback when offline. Google APIs are never cached.
-const CACHE = 'paytrack-v45';
+const CACHE = 'paytrack-v46';
 const SHELL = [
   '.', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/auth.js', 'js/config.js', 'js/google.js', 'js/match.js',
-  'js/parse.js', 'js/store.js', 'js/sync.js',
+  'js/parse.js', 'js/store.js', 'js/sync.js', 'js/log.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png',
 ];
 

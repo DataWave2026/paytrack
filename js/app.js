@@ -5,6 +5,12 @@ import * as g from './google.js';
 import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub } from './match.js';
+import { log, dump, clearLog } from './log.js';
+
+window.addEventListener('error', (e) =>
+  log('error', { msg: String(e.message), src: `${(e.filename || '').split('/').pop()}:${e.lineno}` }));
+window.addEventListener('unhandledrejection', (e) =>
+  log('unhandled', { msg: String(e.reason?.message || e.reason).slice(0, 200) }));
 
 // ---------- tiny DOM helper ----------
 function h(tag, attrs = {}, ...children) {
@@ -598,6 +604,12 @@ async function runStubPipeline(file) {
     const img = file.type === 'application/pdf' ? file : await normalizeImage(file);
     const text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
     const parsed = parseStub(text || '');
+    log('scan', {
+      inBytes: file.size, ocrChars: (text || '').length, vendor: parsed.vendor,
+      got: ['project_name', 'employer', 'payee', 'period_start', 'gross', 'check_no', 'day_count', 'paid_to']
+        .filter(k => parsed[k] !== '' && parsed[k] !== null).join(','),
+      earn: parsed.earnings.length,
+    });
     confirmStubForm(parsed, null, text);
   } catch (e) {
     toast(/400/.test(e.message)
@@ -705,6 +717,10 @@ async function pickMatch(p, uploaded, ocrText) {
     && !(p.hourly_rates || []).length
     && !(p.earnings || []).some(e => /straight|overtime|\bot\b|meal|holiday|penalt/i.test(e.type || ''));
   const candidates = matchStub({ ...p, gear_amount: stubGear }, jobsList);
+  log('match', {
+    stub: p.project_name || p.check_no || '?', gearOnly,
+    top: candidates.slice(0, 3).map(c => ({ p: c.job.project, s: c.score, r: c.reasons.join('+') })),
+  });
   // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
   // default to "create a new job" so a stale selection never sticks.
   let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
@@ -860,6 +876,10 @@ async function pickMatch(p, uploaded, ocrText) {
           matched_job_id: job.id,
           ocr_text_excerpt: (ocrText || '').slice(0, 500),
         };
+        log('stubSaved', {
+          check: p.check_no || '', job: job.project, newJob: !chosen,
+          wagesPaid: markPaid, gearPaid: stubGear > 0 && markGearPaid, updated: !!existingStub,
+        });
         await store.putStub(stubRec);
         if (auth.isConnected()) sync.pushJob(job).catch(e => toast('Sync: ' + e.message, 5000));
         toast(existingStub
@@ -1050,6 +1070,18 @@ async function settingsView() {
           catch (e) { toast(e.message, 6000); }
         },
       }, 'Sync now'),
+      h('p', { class: 'muted small mt' },
+        h('a', {
+          href: '#', onclick: async (e) => {
+            e.preventDefault();
+            const diag = { version: APP_VERSION, ua: navigator.userAgent, log: dump() };
+            await navigator.clipboard?.writeText(JSON.stringify(diag, null, 1));
+            toast('Diagnostics copied — paste them to Claude to debug.');
+          },
+        }, 'Copy diagnostics'), ' · ',
+        h('a', {
+          href: '#', onclick: (e) => { e.preventDefault(); clearLog(); toast('Diagnostics log cleared.'); },
+        }, 'clear')),
       h('button', {
         class: 'secondary', onclick: async () => {
           // Clears cached app files only — jobs/stubs (IndexedDB) are untouched.
@@ -1086,16 +1118,19 @@ eyeBtn.addEventListener('click', () => {
   render();
 });
 drawEye();
-
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v45';
+const APP_VERSION = 'v46';
+log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
   dot.className = state === 'connected' ? 'on' : (auth.hasCredentials() ? 'warn' : '');
   dot.title = state === 'connected' ? 'Google connected' : 'Google not connected — tap to reconnect';
 }
-auth.authBus.addEventListener('state', (e) => setConnDot(e.detail));
+auth.authBus.addEventListener('state', (e) => {
+  setConnDot(e.detail);
+  log('auth', e.detail);
+});
 setConnDot(auth.isConnected() ? 'connected' : 'disconnected');
 // One-tap reconnect: a real click is a user gesture, so the Google popup
 // is allowed here even when silent refresh was blocked.
@@ -1125,6 +1160,25 @@ async function dedupeChecks() {
       for (const dupe of group.slice(1)) {
         await store.deleteStub(dupe.id);
         removed++;
+      }
+    }
+    // Two jobs pointing at the same calendar event = the same job imported
+    // twice (e.g. on two devices before they synced). Keep the newest.
+    const jobsAll = await store.allJobs();
+    const byEvent = {};
+    for (const j of jobsAll) {
+      if (j.calendar_event_id) (byEvent[j.calendar_event_id] ||= []).push(j);
+    }
+    for (const grp of Object.values(byEvent)) {
+      if (grp.length < 2) continue;
+      grp.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+      for (const dup of grp.slice(1)) {
+        dup.deleted = true;
+        dup.calendar_event_id = '';
+        dup.calendar_event_ids = [];
+        await store.putJob(dup, { silent: true });
+        removed++;
+        log('dedupeJob', { project: dup.project });
       }
     }
     const jobs = await store.allJobs();
@@ -1176,7 +1230,9 @@ async function backgroundSync() {
     await sync.pullCalendar();
     await sync.pullSheet();
     await sync.pushUnsynced();
+    log('sync', { ok: true });
   } catch (e) {
+    log('sync', { ok: false, code: e.code || '', msg: String(e.message).slice(0, 160) });
     if (e.code !== 'NEEDS_CONNECT') console.warn('sync', e);
   }
 }
