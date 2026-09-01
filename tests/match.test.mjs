@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { matchStub, rateVariants } from '../js/match.js';
 
 const jobs = [
-  { id: 'a', project: 'Ritual', start_date: '2026-08-16', end_date: '2026-08-22',
+  { id: 'a', project: 'Riverton', start_date: '2026-08-16', end_date: '2026-08-22',
     rate_amount: 900, rate_hours: 11, wages_status: 'unpaid' },
-  { id: 'b', project: 'Solace', start_date: '2026-07-01', end_date: '2026-07-03',
+  { id: 'b', project: 'Seaside', start_date: '2026-07-01', end_date: '2026-07-03',
     rate_amount: 955, rate_hours: 10, wages_status: 'paid' },
   { id: 'c', project: 'Cover for Matt', start_date: '2026-08-20', end_date: '2026-08-20',
     rate_amount: 700, rate_hours: 8, wages_status: 'unpaid' },
@@ -18,7 +18,7 @@ test('rate variants include day-rate / hours', () => {
 
 test('stub with name + dates + rate picks the right job', () => {
   const stub = {
-    project_name: 'Ritual', employer: 'Example Pictures',
+    project_name: 'Riverton', employer: 'Example Pictures',
     period_start: '2026-08-16', period_end: '2026-08-22',
     hourly_rates: [81.82, 90, 122.73, 163.64],
   };
@@ -63,11 +63,11 @@ test('gear-only stub matches via gear amount + dates', () => {
 
 test('gear check dated after worked days still auto-matches by exact name', () => {
   // Job trimmed to actual worked days (Aug 9–13); gear check period Aug 15.
-  const withJob = [...jobs, { id: 'ya', project: 'YA Social Content Day',
+  const withJob = [...jobs, { id: 'ya', project: 'Brand Social Day',
     start_date: '2026-08-09', end_date: '2026-08-13', wages_status: 'paid',
     gear_total: null, gear_status: 'unpaid' }];
   const stub = {
-    project_name: 'YA Social Content Day', employer: 'Netflix Media, LLC',
+    project_name: 'Brand Social Day', employer: 'Streamline Media, LLC',
     period_start: '2026-08-15', period_end: '2026-08-15',
     hourly_rates: [], gear_amount: 2400,
   };
@@ -77,9 +77,9 @@ test('gear check dated after worked days still auto-matches by exact name', () =
 });
 
 test('deleted jobs are never candidates', () => {
-  const withDeleted = [...jobs, { id: 'd', project: 'Ritual', deleted: true,
+  const withDeleted = [...jobs, { id: 'd', project: 'Riverton', deleted: true,
     start_date: '2026-08-16', end_date: '2026-08-22', rate_amount: 900, rate_hours: 11 }];
-  const m = matchStub({ project_name: 'Ritual', period_start: '2026-08-16',
+  const m = matchStub({ project_name: 'Riverton', period_start: '2026-08-16',
     period_end: '2026-08-22', hourly_rates: [81.82] }, withDeleted);
   assert.ok(m.every(c => c.job.id !== 'd'));
 });

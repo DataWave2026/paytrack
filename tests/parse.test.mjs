@@ -16,7 +16,7 @@ test('date and money primitives', () => {
 test('wrapbook stub parses', () => {
   const p = parseStub(wrapbook);
   assert.equal(p.vendor, 'Wrapbook');
-  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.project_name, 'Riverton');
   assert.equal(p.period_start, '2026-08-16');
   assert.equal(p.period_end, '2026-08-22');
   assert.equal(p.check_date, '2026-08-25');
@@ -47,7 +47,7 @@ Project
 Work Period Start Date
 Work Period End Date
 Days Worked
-Ritual
+Riverton
 Aug 16, 2026
 Aug 22, 2026
 2
@@ -68,7 +68,7 @@ Total Hours Worked
 17.5
 Paid by Check #1001262960 on Aug 25, 2026`;
   const p = parseStub(text);
-  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.project_name, 'Riverton');
   assert.equal(p.period_start, '2026-08-16');
   assert.equal(p.period_end, '2026-08-22');
   assert.equal(p.day_count, 2);
@@ -113,7 +113,7 @@ FEIN#: XX-XXX
 Example Pictures, 1 Studio Way, Malibu, CA, 90265
 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
 New York, NY, 10003-1502, FEIN#: 82-4462453
-Ritual
+Riverton
 Aug 16, 2026
 Aug 22, 2026
 2
@@ -148,7 +148,7 @@ Amount
 $1,759.10`;
   const p = parseStub(text);
   assert.equal(p.vendor, 'Wrapbook');
-  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.project_name, 'Riverton');
   assert.equal(p.payee, 'ExampleMedia LLC');
   assert.equal(p.job_title, 'Digital Imaging Tech');
   assert.equal(p.classification, 'Loan Out');   // inferred from loan-out company
@@ -187,7 +187,7 @@ Loan Out
 Digital Imaging Tech
 1234 ExampleMedia, 123 Example St, Los Angeles, CA, 90000-1111 FEIN#: XX-XXX
 Example Pictures, 1 Studio Way, Malibu, CA, 90265 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206 New York, NY, 10003-1502, FEIN#: 82-4462453
-Ritual
+Riverton
 Aug 16, 2026 Aug 22, 2026
 2
 support@wrapbook.com
@@ -226,7 +226,7 @@ Primary Account:
 Paid by Check #1001262960 on Aug 25, 2026
 $1,759.10`;
   const p = parseStub(text);
-  assert.equal(p.project_name, 'Ritual');
+  assert.equal(p.project_name, 'Riverton');
   assert.equal(p.payee, '1234 Example Media');
   assert.equal(p.job_title, 'Digital Imaging Tech');
   assert.equal(p.classification, 'Loan Out');
@@ -261,19 +261,19 @@ Aug 20, 2026
 Loan Out
 Digital Imaging Tech
 1234 ExampleMedia, 123 Example St, Los Angeles, CA, 90000
-Netflix Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
-YA Social Content Day
+Streamline Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206
+Brand Social Day
 Aug 9, 2026 Aug 15, 2026
 2
 Gross Earnings:
 $1,922.73
 Paid by Check #10012606 on Aug 20, 2026`;
   const p = parseStub(text);
-  assert.equal(p.employer, 'Netflix Media, LLC');
+  assert.equal(p.employer, 'Streamline Media, LLC');
   assert.equal(p.payroll_employer, 'TakeOne Network Corp.');
   assert.equal(p.payee, '1234 Example Media');
   assert.equal(p.paid_to, 'company');
-  assert.equal(p.project_name, 'YA Social Content Day');
+  assert.equal(p.project_name, 'Brand Social Day');
   assert.equal(p.period_start, '2026-08-09');
   assert.equal(p.period_end, '2026-08-15');
 });
@@ -295,7 +295,7 @@ Payroll Employer
 123 Example St, Los Angeles, CA, 90000-1111
 Loan Out
 Digital Imaging Tech
-Netflix Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028
+Streamline Media, LLC, 1000 Example Blvd, Los Angeles, CA, 90028
 TakeOne Network Corp. DBA Wrapbook, 228 Park Ave S #36206 New York, NY, 10003-1502, FEIN#: 82-4462453
 Project
 Date
@@ -304,7 +304,7 @@ Aug 15, 2026 Kit/box fee
 Gross Earnings:
 Total Deductions:
 Net Earnings:
-YA Social Content Day
+Brand Social Day
 1 (833) 977-2665
 Amount
 $2,400.00
@@ -317,8 +317,8 @@ Primary Account:
 Paid by Check #1001260617 on Aug 20, 2026
 $2,400.00`;
   const p = parseStub(text);
-  assert.equal(p.project_name, 'YA Social Content Day');
-  assert.equal(p.employer, 'Netflix Media, LLC');
+  assert.equal(p.project_name, 'Brand Social Day');
+  assert.equal(p.employer, 'Streamline Media, LLC');
   assert.equal(p.payee, '1234 ExampleMedia');
   assert.equal(p.paid_to, 'company');
   assert.equal(p.period_start, '2026-08-15');
@@ -363,7 +363,7 @@ Doe, Jane M., XX-XXX
 Address
 123 Example St, Los Angeles, CA, 90000
 Project
-Ritual
+Riverton
 Work Period Start Date
 Aug 16, 2026
 Gross Earnings: $1,200.00`;
@@ -436,7 +436,7 @@ test('real-world note variants from the iCloud calendar', () => {
 });
 
 test('job-like event detection', () => {
-  assert.ok(looksLikeJob('Solace with Mike G', '$955/10 paid, $1200/gear paid'));
+  assert.ok(looksLikeJob('Seaside with Mike G', '$955/10 paid, $1200/gear paid'));
   assert.ok(looksLikeJob('Hold for Batch', 'Wages paid'));
   assert.ok(looksLikeJob('cover for Matt', 'Scale paid, $1000/gear not yet paid'));
   assert.ok(looksLikeJob('Hold for data job', '$1000/day?'));

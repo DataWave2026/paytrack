@@ -320,9 +320,9 @@ function parseWrapbook(text) {
 
   const companyAddr = (l) => {
     if (isStandaloneDate(l) || parseDate(l.slice(0, 20)) || /\bcheck\b|paid\s+by/i.test(l)) return null;
-    // Company then address. "3038DigitalMedia, 422 …" counts (digits glued to
-    // letters); "422 Avenue 64, …" is a street address and doesn't. An entity
-    // suffix may sit between the name and the address: "Netflix Media, LLC, 1 …".
+    // Company then address. "1234FilmCo, 500 …" counts (digits glued to
+    // letters); "500 Main St, …" is a street address and doesn't. An entity
+    // suffix may sit between the name and the address: "Acme Media, LLC, 1 …".
     return l.match(/^((?:\d+[A-Za-z]|[A-Za-z])[^,]{0,45}?(?:,?\s*(?:LLC|L\.L\.C\.?|Inc\.?|Corp\.?|Ltd\.?|Co\.))?),\s*\d/i);
   };
   const squash = (s) => (s || '').replace(/\s/g, '').toLowerCase();
