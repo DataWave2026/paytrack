@@ -7,7 +7,7 @@ import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked',
   'work_dates', 'calendar_event_ids', 'rate_amount',
-  'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via',
+  'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via', 'job_status',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
   'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
@@ -110,7 +110,8 @@ export async function pushJobToCalendar(job) {
   // calendar — their original event already exists in Apple Calendar.
   if (job.no_cal || !s.calendarId || !job.start_date) return job;
   const base = {
-    summary: job.project + (job.company ? ` (${job.company})` : ''),
+    summary: (job.job_status === 'hold' ? 'HOLD: ' : '')
+      + job.project + (job.company ? ` (${job.company})` : ''),
     description: jobToNote(job) + (job.notes ? `\n${job.notes}` : ''),
     extendedProperties: { private: { paytrackJobId: job.id } },
   };
@@ -181,7 +182,8 @@ export function unpaidParts(job) {
 export function jobDueDates(job) {
   const s = settings();
   const base = job.end_date || job.start_date;
-  if (!base || job.deleted) return {};
+  // Holds aren't owed anything yet — no due dates, no reminders.
+  if (!base || job.deleted || job.job_status === 'hold') return {};
   const out = {};
   if (job.wages_status !== 'paid') {
     out.wages = job.expected_pay_date || addDays(base, Number(s.alertDaysWages) || 14);
@@ -358,6 +360,7 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     gear_period: note.gear_period || 'day',
     wages_status: note.wages_status || 'unpaid',
     gear_status: note.gear_status || (note.gear_total || note.gear_rate ? 'unpaid' : 'na'),
+    job_status: /^hold\b/i.test(item.summary) && note.wages_status !== 'paid' ? 'hold' : 'confirmed',
     calendar_event_id: item.no_cal ? '' : item.id,
     no_cal: !!item.no_cal,
     notes: item.description || '',

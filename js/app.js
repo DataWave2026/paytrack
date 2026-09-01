@@ -90,9 +90,12 @@ async function home() {
   for (const s of stubs) {
     if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
   }
-  const unpaidWages = jobs.filter(j => j.wages_status !== 'paid');
-  const unpaidGear = jobs.filter(j => j.gear_status !== 'paid' && j.gear_status !== 'na');
+  const real = jobs.filter(j => j.job_status !== 'hold');
+  const unpaidWages = real.filter(j => j.wages_status !== 'paid');
+  const unpaidGear = real.filter(j => j.gear_status !== 'paid' && j.gear_status !== 'na');
   const overdue = jobs.filter(isOverdue);
+  const upcoming = jobs.filter(j => j.start_date && j.start_date > today())
+    .sort((a, b) => a.start_date.localeCompare(b.start_date));
   const gearOut = unpaidGear.reduce((s, j) => s + (j.gear_total || 0), 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + (j.rate_amount ? j.rate_amount * jobDays(j) : 0), 0);
 
@@ -107,7 +110,7 @@ async function home() {
       else if (j.paid_via === 'me') me += amt;
       else un += amt;
     };
-    for (const j of jobs.filter(x => x.start_date?.startsWith(m))) {
+    for (const j of real.filter(x => x.start_date?.startsWith(m))) {
       const w = jobWages(j, stubsByJob);
       if (w) { if (j.wages_status === 'paid') paidBucket(j, w.amount); else due += w.amount; }
       if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
@@ -143,6 +146,9 @@ async function home() {
           h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—')))),
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
+    upcoming.length ? h('div', { class: 'card' },
+      h('h2', {}, 'Upcoming'),
+      upcoming.slice(0, 6).map(j => jobRow(j, stubsByJob))) : null,
     overdue.length ? h('div', { class: 'card' },
       h('h2', {}, 'Overdue'),
       overdue.map(j => jobRow(j, stubsByJob))) : null,
@@ -172,6 +178,7 @@ function jobRow(job, stubsByJob) {
         job.days_worked ? `${job.days_worked} day${job.days_worked === 1 ? '' : 's'}` : '', rate, amt,
         job.gear_total ? `gear ${fmt$(job.gear_total)}` : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'badges' },
+      job.job_status === 'hold' ? h('span', { class: 'badge partial' }, 'HOLD') : null,
       statusBadge('wages', job.wages_status),
       statusBadge('gear', job.gear_status)));
 }
@@ -289,6 +296,10 @@ function editJob(existing) {
 
   const form = h('div', { class: 'card' },
     h('h2', {}, existing ? 'Edit job' : 'New job'),
+    h('label', {}, 'Job status'),
+    segmented('jobstatus', job.job_status || 'confirmed',
+      [['confirmed', 'Confirmed'], ['hold', 'Hold / potential']],
+      v => job.job_status = v),
     h('label', {}, 'Project / show'), input('project', { placeholder: 'e.g. Ritual' }),
     h('label', {}, 'Company (optional)'), input('company', { placeholder: 'production co / who pays' }),
     h('div', { class: 'row2' },
@@ -416,7 +427,7 @@ async function totals() {
   const months = {};
   const acc = { wagesPaid: 0, wagesDue: 0, gearPaid: 0, gearDue: 0 };
   let estimated = 0, noAmount = 0;
-  for (const j of jobs.filter(x => x.start_date.startsWith(String(totalsYear)))) {
+  for (const j of jobs.filter(x => x.start_date.startsWith(String(totalsYear)) && x.job_status !== 'hold')) {
     const m = j.start_date.slice(0, 7);
     const row = months[m] ||= { wages: 0, gear: 0 };
     const w = jobWages(j, stubsByJob);
@@ -760,6 +771,7 @@ async function pickMatch(p, uploaded, ocrText) {
             job.end_date = days[days.length - 1];
           }
         }
+        job.job_status = 'confirmed';   // a payment proves the job happened
         if (markPaid) job.wages_status = 'paid';
         if (stubGear > 0 && markGearPaid) {
           // A payment short of the job's stated gear total is partial, not paid.
@@ -1029,7 +1041,7 @@ eyeBtn.addEventListener('click', () => {
 drawEye();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v41';
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
