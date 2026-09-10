@@ -1,8 +1,8 @@
 // Thin REST helpers over Google Drive / Sheets / Calendar. No SDKs, no
 // model APIs — plain fetch with the user's own OAuth token.
-import { token } from './auth.js';
+import { token, trySilentRefresh } from './auth.js';
 
-async function call(url, { method = 'GET', json, body, headers = {}, raw = false } = {}) {
+async function call(url, { method = 'GET', json, body, headers = {}, raw = false } = {}, _retried = false) {
   const t = await token();
   const opts = { method, headers: { Authorization: `Bearer ${t}`, ...headers } };
   if (json !== undefined) {
@@ -12,6 +12,13 @@ async function call(url, { method = 'GET', json, body, headers = {}, raw = false
     opts.body = body;
   }
   const resp = await fetch(url, opts);
+  // Token died mid-session: refresh silently and retry once instead of
+  // surfacing "disconnected".
+  if (resp.status === 401 && !_retried) {
+    if (await trySilentRefresh()) {
+      return call(url, { method, json, body, headers, raw }, true);
+    }
+  }
   if (!resp.ok) {
     let detail = '';
     try { detail = (await resp.json()).error?.message || ''; } catch {}
@@ -88,6 +95,15 @@ export async function clearRange(sheetId, range) {
 export async function listCalendars() {
   const r = await call('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer');
   return r.items || [];
+}
+
+// All events tagged with one of our private extended properties, e.g.
+// paytrackJobId=<id> — the ground truth for duplicate detection.
+export async function eventsByPrivateProp(calendarId, key, value) {
+  const { items } = await listEvents(calendarId, {
+    privateExtendedProperty: `${key}=${value}`, singleEvents: 'false', showDeleted: 'false',
+  });
+  return items;
 }
 
 export async function listEvents(calendarId, params = {}) {

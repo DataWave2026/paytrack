@@ -134,16 +134,18 @@ async function home() {
     const d = new Date(nowD.getFullYear(), nowD.getMonth() - k, 1);
     const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     let me = 0, co = 0, un = 0, due = 0;
-    const paidBucket = (j, amt) => {
-      if (j.paid_via === 'company') co += amt;
-      else if (j.paid_via === 'me') me += amt;
+    const paidBucket = (via, amt) => {
+      if (via === 'company') co += amt;
+      else if (via === 'me') me += amt;
       else un += amt;
     };
     for (const j of real.filter(x => x.start_date?.startsWith(m))) {
       const w = jobWages(j, stubsByJob);
-      if (w) { if (j.wages_status === 'paid') paidBucket(j, w.amount); else if (isWrapped(j)) due += w.amount; }
+      if (w) { if (j.wages_status === 'paid') paidBucket(j.paid_via, w.amount); else if (isWrapped(j)) due += w.amount; }
       if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
-        if (j.gear_status === 'paid') paidBucket(j, j.gear_total); else if (isWrapped(j)) due += j.gear_total;
+        // Gear can be paid to a different recipient than wages.
+        if (j.gear_status === 'paid') paidBucket(j.gear_paid_via || j.paid_via, j.gear_total);
+        else if (isWrapped(j)) due += j.gear_total;
       }
     }
     return { label: d.toLocaleString('en-US', { month: 'long' }), me, co, un, due };
@@ -371,6 +373,7 @@ async function repointStubs(job) {
   if (gearMoved > 0) {
     if (target.gear_total === null || target.gear_total === undefined) target.gear_total = gearMoved;
     if (target.gear_status === 'na' || target.gear_status === 'unpaid') target.gear_status = 'paid';
+    if (!target.gear_paid_via) target.gear_paid_via = stubs.find(s => s.paid_to)?.paid_to || '';
     await store.putJob(target, { silent: true });
     if (auth.isConnected()) sync.pushJob(target).catch(() => {});
   }
@@ -450,7 +453,7 @@ async function editJob(existing) {
     segmented('wages', job.wages_status,
       [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.wages_status = v),
-    h('label', {}, 'Paid to (me personally vs my company)'),
+    h('label', {}, 'Wages paid to'),
     segmented('paidvia', job.paid_via || '',
       [['', 'Not set'], ['me', 'Me'], ['company', 'My company']],
       v => job.paid_via = v),
@@ -464,6 +467,10 @@ async function editJob(existing) {
     segmented('gear', job.gear_status,
       [['na', 'No gear'], ['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
       v => job.gear_status = v),
+    h('label', {}, 'Gear paid to (can differ from wages)'),
+    segmented('gearpaidvia', job.gear_paid_via || '',
+      [['', 'Same as wages / not set'], ['me', 'Me'], ['company', 'My company']],
+      v => job.gear_paid_via = v),
     h('label', {}, `Expect payment by (blank = wrap + ${settings().alertDaysWages}d wages / +${settings().alertDaysGear}d gear)`),
     input('expected_pay_date', { type: 'date' }),
     h('label', {}, 'Notes'), h('textarea', {
@@ -972,12 +979,18 @@ async function pickMatch(p, uploaded, ocrText) {
         // Auto-learn the two payee names from real stubs.
         if (p.paid_to === 'company' && p.payee && !settings().companyName) saveSettings({ companyName: p.payee });
         if (p.paid_to === 'me' && p.payee && !settings().personalName) saveSettings({ personalName: p.payee });
-        if (p.paid_to) job.paid_via = p.paid_to;
-        else if (/loan\s*-?\s*out/i.test(p.classification || '')) job.paid_via = 'company';
+        let via = '';
+        if (p.paid_to) via = p.paid_to;
+        else if (/loan\s*-?\s*out/i.test(p.classification || '')) via = 'company';
         else if (p.payee) {
           const comp = sq(settings().companyName);
-          job.paid_via = comp && (sq(p.payee).includes(comp) || comp.includes(sq(p.payee)))
-            ? 'company' : 'me';
+          via = comp && (sq(p.payee).includes(comp) || comp.includes(sq(p.payee))) ? 'company' : 'me';
+        }
+        // Wages and gear are attributed independently — this stub's payee
+        // applies only to what THIS stub actually paid.
+        if (via) {
+          if (markPaid) job.paid_via = via;
+          if (stubGear > 0 && markGearPaid) job.gear_paid_via = via;
         }
         if (markPaid && p.check_date) {
           const extras = [p.gross ? `gross ${fmt$(p.gross)}` : '',
@@ -1147,7 +1160,18 @@ async function settingsView() {
           calCard.append(picker);
         } catch (e) { toast(e.message, 6000); }
       },
-    }, s.calendarId ? 'Change calendar' : 'Pick calendar'));
+    }, s.calendarId ? 'Change calendar' : 'Pick calendar'),
+    h('button', {
+      class: 'secondary', onclick: async () => {
+        if (!confirm('Sweep the calendar for duplicated PayTrack events and delete the extras? One event per job per day is kept.')) return;
+        try {
+          toast('Cleaning duplicates — this can take a minute…', 8000);
+          const n = await sync.cleanupCalendarDuplicates((i, total, removed) =>
+            toast(`Checking job ${i}/${total} — ${removed} duplicates removed so far…`, 4000));
+          toast(n ? `Done — removed ${n} duplicate event${n === 1 ? '' : 's'}.` : 'No duplicates found.', 6000);
+        } catch (e) { toast(e.message, 6000); }
+      },
+    }, 'Clean duplicate calendar events'));
 
   return h('div', {},
     h('div', { class: 'card' },
@@ -1250,7 +1274,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v53';
+const APP_VERSION = 'v54';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
