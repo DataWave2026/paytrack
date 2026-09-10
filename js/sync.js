@@ -4,10 +4,11 @@ import { settings, saveSettings } from './config.js';
 import * as g from './google.js';
 import * as store from './store.js';
 import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
+import { log } from './log.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked',
   'work_dates', 'calendar_event_ids', 'rate_amount',
-  'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via', 'job_status',
+  'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via', 'gear_paid_via', 'job_status',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
   'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
@@ -142,7 +143,14 @@ export async function pushJobToCalendar(job) {
         });
     } else {
       // Non-contiguous days can't be one event — replace with per-day events.
+      // Delete EVERY event tagged with this job (not just remembered ids) so
+      // strays from an interrupted earlier push can't accumulate.
       await deleteAll();
+      try {
+        for (const ev of await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id)) {
+          await g.deleteEvent(s.calendarId, ev.id);
+        }
+      } catch (e) { log('pushSweepErr', String(e.message)); }
       for (const d of perDay) {
         const created = await g.insertEvent(s.calendarId,
           { ...base, start: { date: d }, end: { date: addDays(d, 1) } });
@@ -163,7 +171,19 @@ export async function pushJobToCalendar(job) {
           } else throw e;
         });
     } else {
-      const created = await g.insertEvent(s.calendarId, event);
+      // Before inserting, adopt an event already tagged with this job — an
+      // interrupted earlier push may have created one we never remembered.
+      let created = null;
+      try {
+        const existing = await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id);
+        if (existing.length) {
+          created = existing[0];
+          await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
+          for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
+          log('adoptedEvent', { job: job.project, strays: existing.length - 1 });
+        }
+      } catch (e) { log('adoptCheckErr', String(e.message)); }
+      if (!created) created = await g.insertEvent(s.calendarId, event);
       job.calendar_event_id = created.id;
     }
   }
@@ -226,7 +246,18 @@ async function upsertPartReminder(job, part, idField, due) {
         } else throw e;
       });
   } else {
-    const created = await g.insertEvent(s.calendarId, event);
+    // Adopt an existing reminder for this job+part before inserting a new one.
+    let created = null;
+    try {
+      const existing = (await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id))
+        .filter(ev => (ev.summary || '').endsWith(`${part} unpaid`));
+      if (existing.length) {
+        created = existing[0];
+        await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
+        for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
+      }
+    } catch (e) { log('adoptRemErr', String(e.message)); }
+    if (!created) created = await g.insertEvent(s.calendarId, event);
     job[idField] = created.id;
   }
 }
@@ -242,12 +273,86 @@ export async function syncReminder(job) {
   return job;
 }
 
-// Push a job everywhere after an in-app edit.
+// Push a job everywhere after an in-app edit. Event ids are persisted after
+// EVERY stage, even on failure — losing a freshly created event's id is how
+// duplicates were born (each retry inserted another copy).
 export async function pushJob(job) {
-  await pushJobToCalendar(job);
-  await syncReminder(job);
-  await store.putJob(job, { silent: true });   // persist event ids
+  try {
+    await pushJobToCalendar(job);
+  } finally {
+    await store.putJob(job, { silent: true });
+  }
+  try {
+    await syncReminder(job);
+  } finally {
+    await store.putJob(job, { silent: true });
+  }
   scheduleMirror();
+}
+
+// One-time sweep: collapse every duplicated PayTrack event on the calendar.
+// Keeps one event per job per day (preferring the ids the app remembers),
+// deletes the rest, and heals the stored ids. Reminders likewise.
+export async function cleanupCalendarDuplicates(onProgress) {
+  const s = settings();
+  if (!s.calendarId) throw new Error('Pick a calendar in Setup first.');
+  const jobs = await store.allJobs({ includeDeleted: true });
+  let removed = 0, i = 0;
+  for (const job of jobs) {
+    i++;
+    if (onProgress && i % 5 === 0) onProgress(i, jobs.length, removed);
+    let evs = [];
+    try { evs = await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id); }
+    catch (e) { log('cleanupListErr', String(e.message)); continue; }
+    if (evs.length) {
+      const known = new Set([job.calendar_event_id, ...(job.calendar_event_ids || [])].filter(Boolean));
+      const byDate = {};
+      for (const ev of evs) {
+        const d = ev.start?.date || (ev.start?.dateTime || '').slice(0, 10) || '?';
+        (byDate[d] ||= []).push(ev);
+      }
+      const keepIds = [];
+      for (const group of Object.values(byDate)) {
+        group.sort((a, b) => (known.has(b.id) ? 1 : 0) - (known.has(a.id) ? 1 : 0)
+          || (a.created || '').localeCompare(b.created || ''));
+        keepIds.push(group[0].id);
+        for (const ev of group.slice(1)) {
+          await g.deleteEvent(s.calendarId, ev.id);
+          removed++;
+        }
+      }
+      if (!job.deleted) {
+        if ((job.work_dates || []).length && keepIds.length > 1) {
+          job.calendar_event_ids = keepIds;
+          job.calendar_event_id = '';
+        } else if (keepIds.length >= 1 && !(job.work_dates || []).length) {
+          job.calendar_event_id = keepIds[0];
+          job.calendar_event_ids = [];
+        }
+        await store.putJob(job, { silent: true });
+      }
+    }
+    let rem = [];
+    try { rem = await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id); }
+    catch { continue; }
+    const keepRem = new Set([job.reminder_event_id, job.gear_reminder_event_id].filter(Boolean));
+    const bySummary = {};
+    for (const ev of rem) (bySummary[ev.summary || ''] ||= []).push(ev);
+    for (const group of Object.values(bySummary)) {
+      group.sort((a, b) => (keepRem.has(b.id) ? 1 : 0) - (keepRem.has(a.id) ? 1 : 0)
+        || (b.created || '').localeCompare(a.created || ''));
+      // Deleted jobs keep no reminders at all; live jobs keep one per part.
+      const keep = job.deleted ? null : group[0];
+      for (const ev of group) {
+        if (keep && ev.id === keep.id) continue;
+        await g.deleteEvent(s.calendarId, ev.id);
+        removed++;
+      }
+    }
+  }
+  log('cleanup', { removed, jobs: jobs.length });
+  scheduleMirror();
+  return removed;
 }
 
 // Catch-up: any job that never made it onto the calendar (e.g. created
