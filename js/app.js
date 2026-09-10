@@ -127,6 +127,12 @@ async function home() {
   const recent = real.filter(j => (j.end_date || j.start_date) && (j.end_date || j.start_date) <= today());
   const gearOut = unpaidGear.reduce((s, j) => s + (j.gear_total || 0), 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + (j.rate_amount ? j.rate_amount * jobDays(j) : 0), 0);
+  // Red only when actually LATE (past the wages 14d / gear 30d timers, or a
+  // job's own expected date); yellow = unpaid but still within terms.
+  const lateWages = unpaidWages.some(j => (sync.jobDueDates(j).wages || '9999') < today());
+  const lateGear = unpaidGear.some(j => (sync.jobDueDates(j).gear || '9999') < today());
+  const wagesTone = unpaidWages.length ? (lateWages ? 'bad' : 'warn') : 'ok';
+  const gearTone = unpaidGear.length ? (lateGear ? 'bad' : 'warn') : 'ok';
 
   // Last three calendar months, oldest first (wages + gear combined).
   const nowD = new Date();
@@ -156,13 +162,13 @@ async function home() {
     h('div', { class: 'card' },
       h('h2', {}, 'Outstanding'),
       h('div', { class: 'stat-row' },
-        h('div', { class: 'stat ' + (unpaidWages.length ? 'bad' : 'ok') },
+        h('div', { class: 'stat ' + wagesTone },
           h('div', { class: 'num' }, String(unpaidWages.length)),
-          h('div', { class: 'lbl' }, 'jobs awaiting wages')),
-        h('div', { class: 'stat ' + (gearOut ? 'bad' : 'ok') },
+          h('div', { class: 'lbl' }, lateWages ? 'jobs awaiting wages (late)' : 'jobs awaiting wages')),
+        h('div', { class: 'stat ' + gearTone },
           h('div', { class: 'num' }, fmt$(gearOut || 0)),
-          h('div', { class: 'lbl' }, 'gear outstanding')),
-        h('div', { class: 'stat' },
+          h('div', { class: 'lbl' }, lateGear ? 'gear outstanding (late)' : 'gear outstanding')),
+        h('div', { class: 'stat ' + (unpaidWages.length ? wagesTone : '') },
           h('div', { class: 'num' }, wagesOut ? '~' + fmt$(wagesOut) : '—'),
           h('div', { class: 'lbl' }, 'est. wages owed'))),
     ),
@@ -1274,7 +1280,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v54';
+const APP_VERSION = 'v55';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
