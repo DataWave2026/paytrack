@@ -111,6 +111,7 @@ details.card.inner .job.sumrow { background: rgba(127, 127, 127, .2); }
 .stat .num { font-size: 1.5rem; font-weight: 700; white-space: nowrap; }
 .stat .lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .stat.bad .num { color: var(--bad); }
+.stat.warn .num { color: var(--warn); }
 .stat.ok .num { color: var(--accent); }
 
 .job {
