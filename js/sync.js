@@ -528,6 +528,8 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     gear_status: note.gear_status || (note.gear_total || note.gear_rate ? 'unpaid' : 'na'),
     job_status: /^\s*hold(\b|:)|\bshow\s+hold\b|\bhold\s+for\b/i.test(item.summary)
       && note.wages_status !== 'paid' ? 'hold' : 'confirmed',
+    // Imported history that's already paid doesn't need invoice nagging.
+    invoice_status: note.wages_status === 'paid' ? 'na' : 'unsent',
     calendar_event_id: item.no_cal ? '' : item.id,
     no_cal: !!item.no_cal,
     notes: item.description || '',
