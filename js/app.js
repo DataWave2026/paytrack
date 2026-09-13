@@ -1006,6 +1006,8 @@ async function pickMatch(p, uploaded, ocrText) {
             days_worked: p.day_count || null,
             notes: ['Created from paystub', p.gross ? `gross ${fmt$(p.gross)}` : '',
               p.check_no ? `check #${p.check_no}` : ''].filter(Boolean).join(' · '),
+            // The payment already arrived — no invoice pending on this job.
+            invoice_status: markPaid ? 'na' : 'unsent',
           };
           const days = [...daySel].sort();
           if (days.length) {
@@ -1330,7 +1332,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v60';
+const APP_VERSION = 'v61';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
