@@ -391,8 +391,15 @@ async function repointStubs(job) {
   toast(`${stubs.length} payment record${stubs.length === 1 ? '' : 's'} moved to the other "${target.project}" job.`, 4500);
 }
 
-async function editJob(existing) {
-  const job = existing ? { ...existing } : store.blankJob();
+// "Riverton" -> "Riverton (Part 2)" -> "Riverton (Part 3)" …
+function nextPartName(name) {
+  const m = (name || '').match(/^(.*)\(Part (\d+)\)\s*$/i);
+  if (m) return `${m[1]}(Part ${parseInt(m[2], 10) + 1})`;
+  return `${name || 'Job'} (Part 2)`;
+}
+
+async function editJob(existing, prefill) {
+  const job = existing ? { ...existing } : (prefill || store.blankJob());
   let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
     value: job[key] ?? '', ...attrs,
@@ -436,6 +443,24 @@ async function editJob(existing) {
 
   const form = h('div', { class: 'card' },
     h('h2', {}, existing ? 'Edit job' : 'New job'),
+    existing ? h('button', {
+      class: 'secondary', style: 'margin-top:0;margin-bottom:6px',
+      onclick: () => {
+        // Same client and rates, fresh everything else — just set the dates.
+        const clone = {
+          ...store.blankJob(),
+          project: nextPartName(job.project),
+          company: job.company,
+          rate_amount: job.rate_amount, rate_hours: job.rate_hours, rate_text: job.rate_text,
+          gear_rate: job.gear_rate, gear_period: job.gear_period,
+          gear_status: job.gear_status === 'na' ? 'na' : 'unpaid',
+          paid_via: job.paid_via, gear_paid_via: job.gear_paid_via,
+        };
+        log('duplicateJob', { from: job.project });
+        toast('Duplicated — set the new dates and save.');
+        editJob(null, clone);
+      },
+    }, 'Duplicate Job') : null,
     h('label', {}, 'Job status'),
     segmented('jobstatus', job.job_status || 'confirmed',
       [['confirmed', 'Confirmed'], ['hold', 'Hold / potential']],
@@ -1286,7 +1311,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v57';
+const APP_VERSION = 'v58';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
