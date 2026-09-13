@@ -354,6 +354,48 @@ $1,354.55`;
   assert.equal(gearOnStub(p.earnings), 700);
 });
 
+test('deductions are cataloged: taxes, union dues, SS, Medicare', async () => {
+  const { parseDeductions } = await import('../js/parse.js');
+  // Column layout (labels then amounts) — the photographed-stub norm.
+  const colText = `Deductions
+Federal Income Tax
+State Income Tax
+Social Security
+Medicare
+Union Dues
+$310.00
+$95.50
+$109.06
+$25.51
+$52.75
+Total Deductions:
+$592.82
+Net Earnings:
+$1,166.28`;
+  const col = parseDeductions(colText);
+  assert.equal(col.length, 5);
+  assert.deepEqual(col[0], { type: 'Federal Income Tax', amount: 310 });
+  assert.deepEqual(col[4], { type: 'Union Dues', amount: 52.75 });
+  // Same-line layout.
+  const inline = parseDeductions(`Deductions
+Federal Income Tax $310.00
+Union Dues $52.75
+Net Pay $1,166.28`);
+  assert.equal(inline.length, 2);
+  assert.equal(inline[1].amount, 52.75);
+  // Full-stub wiring: total_deductions + deductions land on the parse.
+  const p = parseStub(`WRAPBOOK
+Check Date
+Aug 25, 2026
+Gross Earnings: $1,759.10
+Deductions
+Union Dues $52.75
+Total Deductions: $52.75
+Net Earnings: $1,706.35`);
+  assert.equal(p.total_deductions, 52.75);
+  assert.equal(p.deductions.length, 1);
+});
+
 test('bare personal name on the stub means paid to me', () => {
   const text = `WRAPBOOK
 Check Date

@@ -96,6 +96,7 @@ export function blankParse() {
     hourly_rates: [], hours: null, gross: null, net: null,
     check_no: '', check_date: '', day_count: null, earnings: [],
     payee: '', classification: '', job_title: '', payroll_employer: '',
+    deductions: [], total_deductions: null,
     paid_to: '',               // 'company' | 'me' | '' unknown
   };
 }
@@ -165,6 +166,37 @@ export function parseEarnings(text) {
   return entries;
 }
 
+// Deduction line items: taxes, union dues, Social Security, Medicare,
+// pension/health, etc. Same tolerance as earnings: amount on the line, or a
+// label column zipped against an amount column.
+const DEDUCT_TYPES = /\b(federal\s+(?:income\s+)?tax|fed(?:eral)?\s+w\/?h|state\s+(?:income\s+)?tax|state\s+w\/?h|local\s+tax|social\s+security|oasdi|medicare|fica|ca\s*sdi|sdi|s\.d\.i\.?|union\s+dues|iatse|local\s+\d+\s+dues|pension|mpip[hp]?p?|health\s+(?:&|and)\s+welfare|health\s+ins(?:urance)?|dental|vision|401\(?k\)?|retirement|garnishment|vacation\s+fund|holiday\s+fund)\b/i;
+
+export function parseDeductions(text) {
+  let seg = text;
+  const start = text.search(/deduction|withholding|taxes\s+withheld/i);
+  if (start >= 0) {
+    seg = text.slice(start);
+    const end = seg.search(/net\s+(earnings|pay)|payments\b/i);
+    if (end > 0) seg = seg.slice(0, end);
+  }
+  const ls = seg.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const entries = [], types = [], amounts = [];
+  for (const l of ls) {
+    const t = l.match(DEDUCT_TYPES);
+    if (t) {
+      const amts = [...l.matchAll(/\$?\s?([\d,]+\.\d{2})\b/g)].map(m => parseMoney(m[1]));
+      if (amts.length) entries.push({ type: t[0].trim(), amount: amts[amts.length - 1] });
+      else types.push(t[0].trim());
+    } else if (/^\$?\s?[\d,]+\.\d{2}$/.test(l)) {
+      amounts.push(parseMoney(l));
+    }
+  }
+  if (!entries.length && types.length) {
+    types.forEach((type, i) => entries.push({ type, amount: amounts[i] ?? null }));
+  }
+  return entries;
+}
+
 function parseGenericInto(p, text) {
   const ls = lines(text);
   if (!p.gross) p.gross = parseMoney(labeled(ls, /gross\s+(earnings|pay|wages|amount)/i, isMoney));
@@ -190,6 +222,10 @@ function parseGenericInto(p, text) {
   }
   if (!p.hourly_rates.length) p.hourly_rates = hourlyRates(text);
   if (!p.earnings.length) p.earnings = parseEarnings(text);
+  if (!p.deductions.length) p.deductions = parseDeductions(text);
+  if (p.total_deductions === null) {
+    p.total_deductions = parseMoney(labeled(ls, /total\s+deductions/i, isMoney));
+  }
   // Invoice-style stubs bury Gross among stray lines — the earnings sum is it.
   if (p.gross === null && p.earnings.length) {
     const s = p.earnings.reduce((a, e) => a + (e.amount || 0), 0);

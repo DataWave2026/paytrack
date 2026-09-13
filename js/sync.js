@@ -15,11 +15,12 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'payee', 'classification', 'job_title', 'payroll_employer', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
+  'deductions', 'total_deductions',
   'created_at', 'updated_at'];
 
 const toRow = (cols, rec) => cols.map(c => {
   const v = rec[c];
-  if (c === 'earnings') return JSON.stringify(v || []);
+  if (c === 'earnings' || c === 'deductions') return JSON.stringify(v || []);
   if (v === null || v === undefined) return '';
   if (Array.isArray(v)) return v.join('|');
   return String(v);
@@ -29,12 +30,12 @@ const fromRow = (cols, row) => {
   const rec = {};
   cols.forEach((c, i) => {
     let v = row[i] ?? '';
-    if (c === 'earnings') {
+    if (c === 'earnings' || c === 'deductions') {
       try { v = JSON.parse(v || '[]'); } catch { v = []; }
       rec[c] = v;
       return;
     }
-    if (['days_worked', 'rate_amount', 'rate_hours', 'gear_rate', 'gear_total', 'hours', 'gross', 'net'].includes(c)) {
+    if (['days_worked', 'rate_amount', 'rate_hours', 'gear_rate', 'gear_total', 'hours', 'gross', 'net', 'total_deductions'].includes(c)) {
       v = v === '' ? null : parseFloat(v);
     } else if (c === 'deleted' || c === 'no_cal') v = v === 'true';
     else if (c === 'hourly_rates') v = v ? v.split('|').map(Number) : [];
