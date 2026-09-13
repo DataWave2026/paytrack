@@ -603,8 +603,10 @@ async function editJob(existing, prefill) {
     const stubs = (await store.allStubs()).filter(s => s.matched_job_id === job.id);
     const rows = stubs.filter(s => s.gross !== null && s.gross !== undefined).map(s => {
       const gearPart = gearOnStub(s.earnings);
+      const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
       return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}`,
-        gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart) };
+        gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart),
+        hours: s.hours, net: s.net, dsum, dedItems: s.deductions || [] };
     });
     const wagesActual = rows.reduce((a, r) => a + r.wages, 0);
     const est = !wagesActual && job.rate_amount ? job.rate_amount * jobDays(job) : null;
@@ -612,12 +614,19 @@ async function editJob(existing, prefill) {
     const total = wages + (job.gear_total || 0);
     if (rows.length || total) {
       breakdown = h('div', { class: 'card' },
-        h('h2', {}, 'Breakdown'),
-        rows.length ? h('table', { class: 'tot' },
-          h('tr', {}, h('th', {}, 'Payment'), h('th', {}, 'Gross'), h('th', {}, 'Gear'), h('th', {}, 'Wages')),
-          rows.map(r => h('tr', {},
-            h('td', {}, r.label), h('td', {}, fmt$(r.gross)),
-            h('td', {}, r.gear ? fmt$(r.gear) : '—'), h('td', {}, r.wages ? fmt$(r.wages) : '—')))) : null,
+        h('h2', {}, 'Breakdown — per check'),
+        rows.map(r => h('div', { class: 'job', style: 'cursor:default;display:block' },
+          h('div', { class: 'title' }, r.label),
+          h('div', { class: 'sub' }, [
+            r.hours ? `${r.hours} hrs` : '',
+            `gross ${fmt$(r.gross)}`,
+            r.gear ? `gear ${fmt$(r.gear)}` : '',
+            r.wages && r.gear ? `wages ${fmt$(r.wages)}` : '',
+            r.dsum ? `deductions ${fmt$(r.dsum)}` : '',
+            r.net !== null && r.net !== undefined ? `net ${fmt$(r.net)}` : '',
+          ].filter(Boolean).join(' · ')),
+          r.dedItems.length ? h('div', { class: 'sub', style: 'opacity:.8' },
+            r.dedItems.map(d => `${d.type} ${fmt$(d.amount)}`).join(' · ')) : null)),
         h('table', { class: 'tot', style: 'margin-top:8px' },
           h('tr', {}, h('td', {}, `Wages${wagesActual ? '' : est ? ' (est. rate × days)' : ''}`),
             h('td', {}, `${wagesActual ? '' : est ? '~' : ''}${fmt$(wages || null)}`)),
@@ -669,14 +678,26 @@ function paychecksCard(stubs) {
         onclick: () => { paycheckYear = Number(y); paycheckOpen = true; render('home'); },
       }, y))) : null,
     h('table', { class: 'tot' },
-      h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Checks'), h('th', {}, 'Hours'),
+      h('tr', {}, h('th', {}, 'Check'), h('th', {}, 'Hours'),
         h('th', {}, 'Gross'), h('th', {}, 'Deducted'), h('th', {}, 'Net')),
-      monthKeys.map(m => h('tr', {},
-        h('td', {}, mName(m)), h('td', {}, String(months[m].checks)),
-        h('td', {}, cell(months[m].hours, false)), h('td', {}, cell(months[m].gross)),
-        h('td', {}, cell(months[m].ded)), h('td', {}, cell(months[m].net)))),
+      // Every individual check listed under its month, with month subtotals.
+      monthKeys.flatMap(m => [
+        ...ys.filter(s => s.check_date.startsWith(m))
+          .sort((a, b) => a.check_date.localeCompare(b.check_date))
+          .map(s => {
+            const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
+            return h('tr', {},
+              h('td', {}, `${mName(m)} ${Number(s.check_date.slice(8, 10))} · #${s.check_no || '—'}`),
+              h('td', {}, cell(s.hours, false)), h('td', {}, cell(s.gross)),
+              h('td', {}, cell(dsum)), h('td', {}, cell(s.net)));
+          }),
+        months[m].checks > 1 ? h('tr', { class: 'sum' },
+          h('td', {}, `${mName(m)} total`),
+          h('td', {}, cell(months[m].hours, false)), h('td', {}, cell(months[m].gross)),
+          h('td', {}, cell(months[m].ded)), h('td', {}, cell(months[m].net))) : null,
+      ]),
       h('tr', { class: 'sum' },
-        h('td', {}, 'Year'), h('td', {}, String(tot.checks)), h('td', {}, cell(tot.hours, false)),
+        h('td', {}, `Year (${tot.checks} checks)`), h('td', {}, cell(tot.hours, false)),
         h('td', {}, cell(tot.gross)), h('td', {}, cell(tot.ded)), h('td', {}, cell(tot.net)))),
     Object.keys(typeTotals).length ? h('div', {},
       h('h2', { style: 'margin-top:16px' }, 'Deductions by type'),
@@ -1412,7 +1433,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v62';
+const APP_VERSION = 'v63';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
