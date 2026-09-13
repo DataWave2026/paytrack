@@ -1432,8 +1432,22 @@ eyeBtn.addEventListener('click', () => {
   render();
 });
 drawEye();
+
+// Sidebar show/hide (handy on phones). State persists per device.
+const NAV_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+const navBtn = document.getElementById('nav-toggle');
+navBtn.innerHTML = NAV_SVG;
+function applySidebar() {
+  document.body.classList.toggle('nav-hidden', !!settings().sidebarHidden);
+}
+navBtn.addEventListener('click', () => {
+  saveSettings({ sidebarHidden: !settings().sidebarHidden });
+  applySidebar();
+});
+applySidebar();
+
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v63';
+const APP_VERSION = 'v64';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1544,6 +1558,9 @@ async function backgroundSync() {
     await sync.pullCalendar();
     await sync.pullSheet();
     await sync.pushUnsynced();
+    // Upload as well as download: a job created while this device was
+    // offline/disconnected must still reach the sheet eventually.
+    await sync.mirrorSheet();
     log('sync', { ok: true });
   } catch (e) {
     log('sync', { ok: false, code: e.code || '', msg: String(e.message).slice(0, 160) });
