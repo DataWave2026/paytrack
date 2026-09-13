@@ -120,8 +120,12 @@ async function home() {
   const unpaidWages = real.filter(j => isWrapped(j) && j.wages_status !== 'paid');
   const unpaidGear = real.filter(j => isWrapped(j) && j.gear_status !== 'paid' && j.gear_status !== 'na');
   const overdue = jobs.filter(isOverdue);
-  const upcoming = jobs.filter(j => j.start_date && j.start_date > today())
-    .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  // Upcoming = future or in-progress jobs, plus EVERY unresolved hold (even
+  // past-dated ones — a hold stays visible until confirmed or removed, so it
+  // can never silently vanish between Upcoming and Recent).
+  const upcoming = jobs.filter(j => j.job_status === 'hold'
+    || (j.start_date && (j.end_date || j.start_date) >= today()))
+    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
   // Recent = completed work only: wrapped on or before today, never holds or
   // future bookings (those live in Upcoming).
   const recent = real.filter(j => (j.end_date || j.start_date) && (j.end_date || j.start_date) <= today());
@@ -523,6 +527,7 @@ async function editJob(existing) {
     existing ? h('button', {
       class: 'secondary', onclick: async () => {
         if (!confirm('Remove this job from the app but KEEP its calendar event?')) return;
+        log('jobRemoved', { project: job.project, mode: 'app-only' });
         await repointStubs(job);
         job.deleted = true;
         // Forget the event links so deletion never touches the calendar.
@@ -537,6 +542,7 @@ async function editJob(existing) {
     existing ? h('button', {
       class: 'danger', onclick: async () => {
         if (!confirm('Delete this job AND its calendar event?')) return;
+        log('jobRemoved', { project: job.project, mode: 'full' });
         await repointStubs(job);
         job.deleted = true;
         await store.putJob(job);
@@ -1280,7 +1286,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v55';
+const APP_VERSION = 'v56';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
