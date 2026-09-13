@@ -472,7 +472,8 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     gear_period: note.gear_period || 'day',
     wages_status: note.wages_status || 'unpaid',
     gear_status: note.gear_status || (note.gear_total || note.gear_rate ? 'unpaid' : 'na'),
-    job_status: /^hold\b/i.test(item.summary) && note.wages_status !== 'paid' ? 'hold' : 'confirmed',
+    job_status: /^\s*hold(\b|:)|\bshow\s+hold\b|\bhold\s+for\b/i.test(item.summary)
+      && note.wages_status !== 'paid' ? 'hold' : 'confirmed',
     calendar_event_id: item.no_cal ? '' : item.id,
     no_cal: !!item.no_cal,
     notes: item.description || '',

@@ -441,6 +441,10 @@ test('job-like event detection', () => {
   assert.ok(looksLikeJob('cover for Matt', 'Scale paid, $1000/gear not yet paid'));
   assert.ok(looksLikeJob('Hold for data job', '$1000/day?'));
   assert.ok(looksLikeJob('Schooled WRAP', 'Wrap day paid'));
+  assert.ok(looksLikeJob('Hold for Netflix shoot', ''));
+  assert.ok(looksLikeJob('Fullwell Show Hold', ''));
+  assert.ok(looksLikeJob('HOLD: T-Mobile (Gifted Youth)', ''));
+  assert.ok(!looksLikeJob('Colonial house closed', ''));   // "hold" not as a word
   assert.ok(!looksLikeJob('Judy duty', ''));
   assert.ok(!looksLikeJob('Amex Lululemon $75 quarterly purchase', ''));
   assert.ok(!looksLikeJob('Flight: DL 2929 from AUS to LAX', 'Confirmation Code: 75W6SJ'));

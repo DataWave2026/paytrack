@@ -460,7 +460,11 @@ export function looksLikeJob(summary, description) {
     || /\/\s?gear|gear\s+(paid|rental|not)/i.test(s)
     || /\bscale\s+(paid|not)/i.test(s)
     || /\bwages?\s+(paid|not|unpaid)/i.test(s)
-    || /\b(wrap|shoot)\s+day\s+paid\b/i.test(s);
+    || /\b(wrap|shoot)\s+day\s+paid\b/i.test(s)
+    // Hand-written holds have no money on them yet, but they ARE jobs —
+    // they import as holds ("Hold for Netflix shoot", "Fullwell Show Hold").
+    || /^\s*hold(\b|:)/i.test(summary || '')
+    || /\bshow\s+hold\b|\bhold\s+for\b/i.test(summary || '');
 }
 
 // Render a job back into the user's readable note style.
