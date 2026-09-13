@@ -188,6 +188,7 @@ async function home() {
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     totalsCard(jobs, stubsByJob),
+    paychecksCard(stubs),
     upcoming.length ? h('div', { class: 'card' },
       h('h2', {}, 'Upcoming'),
       upcoming.slice(0, 6).map(j => jobRow(j, stubsByJob))) : null,
@@ -632,6 +633,62 @@ async function editJob(existing, prefill) {
 // ---------- totals ----------
 let totalsYear = new Date().getFullYear();
 let totalsOpen = false;
+let paycheckYear = new Date().getFullYear();
+let paycheckOpen = false;
+
+// Quick-glance paycheck rollup from stub records: what was paid, when, how
+// many hours, and what was deducted — by month, with a per-type year total.
+// Collapsed by default.
+function paychecksCard(stubs) {
+  const dated = stubs.filter(s => s.check_date);
+  if (!dated.length) return null;
+  const years = [...new Set(dated.map(s => s.check_date.slice(0, 4)))].sort().reverse();
+  if (!years.includes(String(paycheckYear))) paycheckYear = Number(years[0]);
+  const ys = dated.filter(s => s.check_date.startsWith(String(paycheckYear)));
+  const months = {};
+  const typeTotals = {};
+  const tot = { checks: 0, hours: 0, gross: 0, ded: 0, net: 0 };
+  for (const s of ys) {
+    const m = s.check_date.slice(0, 7);
+    const row = months[m] ||= { checks: 0, hours: 0, gross: 0, ded: 0, net: 0 };
+    const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
+    row.checks++; row.hours += s.hours || 0; row.gross += s.gross || 0; row.ded += dsum; row.net += s.net || 0;
+    tot.checks++; tot.hours += s.hours || 0; tot.gross += s.gross || 0; tot.ded += dsum; tot.net += s.net || 0;
+    for (const d of s.deductions || []) {
+      if (d.amount) typeTotals[d.type || 'other'] = (typeTotals[d.type || 'other'] || 0) + d.amount;
+    }
+  }
+  const monthKeys = Object.keys(months).sort();
+  const mName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'short' });
+  const cell = (v, money = true) => v ? (money ? fmt$(v) : String(v)) : '—';
+  const det = h('details', { class: 'card' },
+    h('summary', {}, `Paychecks — hours & deductions — ${paycheckYear}`),
+    years.length > 1 ? h('div', { class: 'seg', style: 'margin-bottom:12px' },
+      years.map(y => h('button', {
+        class: String(paycheckYear) === y ? 'sel' : '',
+        onclick: () => { paycheckYear = Number(y); paycheckOpen = true; render('home'); },
+      }, y))) : null,
+    h('table', { class: 'tot' },
+      h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Checks'), h('th', {}, 'Hours'),
+        h('th', {}, 'Gross'), h('th', {}, 'Deducted'), h('th', {}, 'Net')),
+      monthKeys.map(m => h('tr', {},
+        h('td', {}, mName(m)), h('td', {}, String(months[m].checks)),
+        h('td', {}, cell(months[m].hours, false)), h('td', {}, cell(months[m].gross)),
+        h('td', {}, cell(months[m].ded)), h('td', {}, cell(months[m].net)))),
+      h('tr', { class: 'sum' },
+        h('td', {}, 'Year'), h('td', {}, String(tot.checks)), h('td', {}, cell(tot.hours, false)),
+        h('td', {}, cell(tot.gross)), h('td', {}, cell(tot.ded)), h('td', {}, cell(tot.net)))),
+    Object.keys(typeTotals).length ? h('div', {},
+      h('h2', { style: 'margin-top:16px' }, 'Deductions by type'),
+      h('table', { class: 'tot' },
+        Object.entries(typeTotals).sort((a, b) => b[1] - a[1]).map(([t, v]) => h('tr', {},
+          h('td', {}, t), h('td', {}, fmt$(v)))))) : null,
+  );
+  if (paycheckOpen) det.setAttribute('open', '');
+  det.addEventListener('toggle', () => { paycheckOpen = det.open; });
+  return det;
+}
+
 // Jobs page fold state: current month + year start open, the past starts folded.
 const openMonths = new Set([new Date().toISOString().slice(0, 7)]);
 const openYears = new Set([String(new Date().getFullYear())]);
@@ -849,6 +906,26 @@ function confirmStubForm(parsed, uploaded, ocrText) {
   };
   redrawEarn();
 
+  // Deductions (taxes, union dues, SS/Medicare…) — cataloged per stub.
+  if (!Array.isArray(p.deductions)) p.deductions = [];
+  const dedBox = h('div', {});
+  const redrawDed = () => {
+    dedBox.replaceChildren(
+      ...p.deductions.map((d, i) => h('div', { class: 'earnrow', style: 'grid-template-columns:2fr 1.2fr auto' },
+        h('input', { value: d.type || '', placeholder: 'Type (e.g. Union Dues)', oninput: ev => d.type = ev.target.value }),
+        h('input', { value: d.amount ?? '', placeholder: '$', type: 'number', inputmode: 'decimal',
+          oninput: ev => d.amount = ev.target.value === '' ? null : parseFloat(ev.target.value) }),
+        h('button', {
+          class: 'inline secondary', type: 'button',
+          onclick: () => { p.deductions.splice(i, 1); redrawDed(); },
+        }, '×'))),
+      h('button', {
+        class: 'inline secondary', type: 'button', style: 'margin-top:8px',
+        onclick: () => { p.deductions.push({ type: '', amount: null }); redrawDed(); },
+      }, '+ Add deduction'));
+  };
+  redrawDed();
+
   viewEl.replaceChildren(h('div', { class: 'card' },
     h('h2', {}, 'Confirm stub details' + (p.vendor ? ` — ${p.vendor}` : '')),
     h('p', { class: 'muted small' }, 'OCR pre-filled what it could. Fix anything that looks wrong.'),
@@ -890,6 +967,8 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('label', {}, 'Hourly rates seen (comma-separated)'), input('hourly_rates', { placeholder: '$81.82, $90' }),
     h('label', {}, 'Earnings breakdown (kept with the stub record)'),
     earnBox,
+    h('label', {}, 'Deductions (taxes, union dues, SS/Medicare — kept with the stub record)'),
+    dedBox,
     ocrText ? h('details', { class: 'mt' },
       h('summary', { class: 'muted small', style: 'cursor:pointer' }, 'Raw OCR text (for troubleshooting a wrong field)'),
       h('textarea', { readonly: 'readonly', style: 'min-height:140px;font-size:.75rem;margin-top:8px' }, ocrText),
@@ -1072,6 +1151,7 @@ async function pickMatch(p, uploaded, ocrText) {
           payroll_employer: p.payroll_employer || '',
           paid_to: p.paid_to || '',
           job_title: p.job_title || '', earnings: p.earnings || [],
+          deductions: p.deductions || [], total_deductions: p.total_deductions,
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
           gross: p.gross, net: p.net, check_no: p.check_no, check_date: p.check_date,
@@ -1332,7 +1412,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v61';
+const APP_VERSION = 'v62';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
