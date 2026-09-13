@@ -234,8 +234,20 @@ function jobRow(job, stubsByJob) {
         },
       }, 'Confirm') : null,
       // A hold isn't an official job yet: neutral "wages: — / gear: —" until confirmed.
-      job.invoice_status === 'unsent' && job.job_status !== 'hold'
-        ? h('span', { class: 'badge partial' }, 'INVOICE DUE') : null,
+      // Invoice state is a tap-toggle right on the row: not sent <-> sent.
+      job.invoice_status !== 'na' && job.job_status !== 'hold' ? h('button', {
+        class: 'badge ' + (job.invoice_status === 'unsent' ? 'partial' : 'paid'),
+        style: 'border:none;cursor:pointer;font-weight:600',
+        onclick: async (e) => {
+          e.stopPropagation();
+          job.invoice_status = job.invoice_status === 'unsent' ? 'sent' : 'unsent';
+          await store.putJob(job);
+          if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+          toast(job.invoice_status === 'sent'
+            ? 'Invoice marked sent — daily reminder removed.'
+            : 'Invoice marked NOT sent — daily reminder resumes.');
+        },
+      }, job.invoice_status === 'unsent' ? 'invoice: NOT SENT' : 'invoice: sent') : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
       statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status)));
 }
@@ -1318,7 +1330,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v59';
+const APP_VERSION = 'v60';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
