@@ -80,6 +80,8 @@ export function blankJob() {
     paid_via: '',              // wages recipient: '' unknown | 'me' | 'company'
     gear_paid_via: '',         // gear recipient, independent of wages
     job_status: 'confirmed',   // 'confirmed' | 'hold' (potential/upcoming)
+    invoice_status: 'na',      // 'na' no invoice needed | 'unsent' | 'sent'
+    invoice_reminder_event_id: '',
     expected_pay_date: '', calendar_event_id: '', reminder_event_id: '',
     gear_reminder_event_id: '', no_cal: false, notes: '', updated_at: now(), deleted: false,
   };

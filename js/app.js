@@ -234,6 +234,8 @@ function jobRow(job, stubsByJob) {
         },
       }, 'Confirm') : null,
       // A hold isn't an official job yet: neutral "wages: — / gear: —" until confirmed.
+      job.invoice_status === 'unsent' && job.job_status !== 'hold'
+        ? h('span', { class: 'badge partial' }, 'INVOICE DUE') : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
       statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status)));
 }
@@ -455,6 +457,7 @@ async function editJob(existing, prefill) {
           gear_rate: job.gear_rate, gear_period: job.gear_period,
           gear_status: job.gear_status === 'na' ? 'na' : 'unpaid',
           paid_via: job.paid_via, gear_paid_via: job.gear_paid_via,
+          invoice_status: job.invoice_status === 'na' ? 'na' : 'unsent',
         };
         log('duplicateJob', { from: job.project });
         toast('Duplicated — set the new dates and save.');
@@ -506,6 +509,10 @@ async function editJob(existing, prefill) {
     segmented('gearpaidvia', job.gear_paid_via || '',
       [['', 'Same as wages / not set'], ['me', 'Me'], ['company', 'My company']],
       v => job.gear_paid_via = v),
+    h('label', {}, 'Invoice sent? ("Not sent" nags you daily by email until you flip it)'),
+    segmented('invoice', job.invoice_status || 'na',
+      [['na', 'No invoice'], ['unsent', 'Not sent'], ['sent', 'Sent']],
+      v => job.invoice_status = v),
     h('label', {}, `Expect payment by (blank = wrap + ${settings().alertDaysWages}d wages / +${settings().alertDaysGear}d gear)`),
     input('expected_pay_date', { type: 'date' }),
     h('label', {}, 'Notes'), h('textarea', {
@@ -1311,7 +1318,7 @@ eyeBtn.addEventListener('click', () => {
 });
 drawEye();
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v58';
+const APP_VERSION = 'v59';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

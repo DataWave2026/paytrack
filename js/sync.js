@@ -9,6 +9,7 @@ import { log } from './log.js';
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked',
   'work_dates', 'calendar_event_ids', 'rate_amount',
   'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via', 'gear_paid_via', 'job_status',
+  'invoice_status', 'invoice_reminder_event_id',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
   'no_cal', 'notes', 'updated_at', 'deleted'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
@@ -262,6 +263,58 @@ async function upsertPartReminder(job, part, idField, due) {
   }
 }
 
+// Unsent invoice: a DAILY recurring nag (email + notification) that starts
+// the day after wrap and disappears the moment the invoice is marked sent.
+async function upsertInvoiceReminder(job) {
+  const s = settings();
+  const wanted = !job.deleted && job.job_status !== 'hold'
+    && job.invoice_status === 'unsent' && (job.end_date || job.start_date);
+  if (!wanted) {
+    if (job.invoice_reminder_event_id) {
+      await g.deleteEvent(s.calendarId, job.invoice_reminder_event_id);
+      job.invoice_reminder_event_id = '';
+    }
+    return;
+  }
+  const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
+  let due = addDays(job.end_date || job.start_date, 1);
+  if (due < tomorrow) due = tomorrow;
+  const event = {
+    summary: `Send invoice: ${job.project || 'job'}`,
+    description: `PayTrack — invoice not sent yet. Mark it "Sent" in the app to stop this daily reminder.`,
+    start: { dateTime: `${due}T09:00:00` },
+    end: { dateTime: `${due}T09:15:00` },
+    recurrence: ['RRULE:FREQ=DAILY'],
+    reminders: {
+      useDefault: false,
+      overrides: [{ method: 'email', minutes: 1 }, { method: 'popup', minutes: 1 }],
+    },
+    extendedProperties: { private: { paytrackReminderFor: job.id } },
+  };
+  if (job.invoice_reminder_event_id) {
+    await g.patchEvent(s.calendarId, job.invoice_reminder_event_id, event)
+      .catch(async e => {
+        if (/404|410/.test(e.message)) {
+          const created = await g.insertEvent(s.calendarId, event);
+          job.invoice_reminder_event_id = created.id;
+        } else throw e;
+      });
+  } else {
+    let created = null;
+    try {
+      const existing = (await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id))
+        .filter(ev => (ev.summary || '').startsWith('Send invoice:'));
+      if (existing.length) {
+        created = existing[0];
+        await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
+        for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
+      }
+    } catch (e) { log('adoptInvErr', String(e.message)); }
+    if (!created) created = await g.insertEvent(s.calendarId, event);
+    job.invoice_reminder_event_id = created.id;
+  }
+}
+
 // Wages and gear run on separate timers, so each unpaid part gets its own
 // reminder event; paying one part clears only its reminder.
 export async function syncReminder(job) {
@@ -270,6 +323,7 @@ export async function syncReminder(job) {
   const dues = jobDueDates(job);   // empty when deleted or undated
   await upsertPartReminder(job, 'wages', 'reminder_event_id', dues.wages);
   await upsertPartReminder(job, 'gear', 'gear_reminder_event_id', dues.gear);
+  await upsertInvoiceReminder(job);
   return job;
 }
 
@@ -335,7 +389,7 @@ export async function cleanupCalendarDuplicates(onProgress) {
     let rem = [];
     try { rem = await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id); }
     catch { continue; }
-    const keepRem = new Set([job.reminder_event_id, job.gear_reminder_event_id].filter(Boolean));
+    const keepRem = new Set([job.reminder_event_id, job.gear_reminder_event_id, job.invoice_reminder_event_id].filter(Boolean));
     const bySummary = {};
     for (const ev of rem) (bySummary[ev.summary || ''] ||= []).push(ev);
     for (const group of Object.values(bySummary)) {
