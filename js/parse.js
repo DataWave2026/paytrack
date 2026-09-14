@@ -504,17 +504,19 @@ export function looksLikeJob(summary, description) {
 }
 
 // Render a job back into the user's readable note style.
-export function jobToNote(job) {
+export function jobToNote(job, checks = {}) {
   const parts = [];
   const w = job.wages_status === 'paid' ? 'paid'
     : job.wages_status === 'partial' ? 'partially paid' : 'not yet paid';
-  if (job.rate_amount && job.rate_hours) parts.push(`$${job.rate_amount}/${job.rate_hours} ${w}`);
-  else if (job.rate_text) parts.push(`${job.rate_text} ${w}`);
-  else parts.push(`wages ${w}`);
+  const wRef = checks.wages && job.wages_status !== 'unpaid' ? ` (check #${checks.wages})` : '';
+  if (job.rate_amount && job.rate_hours) parts.push(`$${job.rate_amount}/${job.rate_hours} ${w}${wRef}`);
+  else if (job.rate_text) parts.push(`${job.rate_text} ${w}${wRef}`);
+  else parts.push(`wages ${w}${wRef}`);
   if (job.gear_total || job.gear_status !== 'na') {
     const g = job.gear_status === 'paid' ? 'paid'
       : job.gear_status === 'partial' ? 'partially paid' : 'not yet paid';
-    parts.push(`${job.gear_total ? '$' + job.gear_total + '/' : ''}gear ${g}`);
+    const gRef = checks.gear && job.gear_status !== 'unpaid' ? ` (check #${checks.gear})` : '';
+    parts.push(`${job.gear_total ? '$' + job.gear_total + '/' : ''}gear ${g}${gRef}`);
   }
   return parts.join(', ') + '\n[PayTrack]';
 }

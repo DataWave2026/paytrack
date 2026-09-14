@@ -1448,7 +1448,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v66';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1512,8 +1512,11 @@ async function dedupeChecks() {
     }
     const jobs = await store.allJobs();
     for (const job of jobs) {
-      if (!job.notes || !job.notes.includes('\n')) continue;
-      const uniq = [...new Set(job.notes.split('\n'))].join('\n');
+      if (!job.notes) continue;
+      // De-dupe note lines and drop junk (bare ISO timestamps from an old bug).
+      const uniq = [...new Set(job.notes.split('\n'))]
+        .filter(l => !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(l.trim()))
+        .join('\n');
       if (uniq !== job.notes) {
         job.notes = uniq;
         await store.putJob(job, { silent: true });
