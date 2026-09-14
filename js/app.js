@@ -95,12 +95,13 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 });
 
 // Google tokens die after ~1h and browsers only allow the refresh popup
-// during a user gesture — so ride along on ordinary taps: whenever the
-// session is expired or close to it, renew invisibly inside the tap.
+// during a user gesture — so ride along on ordinary taps, but ONLY once the
+// session has actually expired (the renewal popup flashes briefly; keep that
+// to at most ~once an hour, never pre-emptively).
 let lastRefreshTry = 0;
 document.addEventListener('click', () => {
   if (!settings().everConnected) return;
-  if (auth.isConnected() && !auth.needsRefreshSoon()) return;
+  if (auth.isConnected()) return;
   const now = Date.now();
   if (now - lastRefreshTry < 60000) return;
   lastRefreshTry = now;
@@ -1447,7 +1448,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v64';
+const APP_VERSION = 'v65';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
