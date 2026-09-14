@@ -53,7 +53,10 @@ function requestToken(promptMode) {
 }
 
 // Interactive connect (user taps the button — may show Google popup).
-export function connect() { return requestToken(''); }
+export function connect() {
+  lastRefreshFail = 0;   // a deliberate connect resets the silent-refresh backoff
+  return requestToken('');
+}
 
 // Token is live but inside the renewal window (Google caps tokens at ~1h).
 export function needsRefreshSoon(windowMs = 10 * 60 * 1000) {
@@ -62,22 +65,32 @@ export function needsRefreshSoon(windowMs = 10 * 60 * 1000) {
 
 // Attempt a no-UI refresh; succeeds when called during a user gesture with an
 // active Google session. Never throws.
+// Silent renewal opens Google's brief self-closing popup — unavoidable, so
+// keep it RARE: all callers share one in-flight attempt, and a failure backs
+// everything off for 10 minutes instead of flashing again and again.
+let refreshInFlight = null;
+let lastRefreshFail = 0;
 export async function trySilentRefresh() {
-  try { await requestToken('none'); return true; } catch { return false; }
+  if (isConnected()) return true;
+  if (Date.now() - lastRefreshFail < 10 * 60 * 1000) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = requestToken('none')
+      .then(() => true)
+      .catch(() => { lastRefreshFail = Date.now(); return false; })
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
 }
 
 // Get a token for an API call; tries silent refresh, otherwise throws
 // NEEDS_CONNECT so the UI can show the reconnect button.
 export async function token() {
   if (isConnected()) return accessToken;
-  try {
-    return await requestToken('none');
-  } catch {
-    emit('disconnected');
-    const e = new Error('Google connection expired — tap the dot in the top bar to reconnect.');
-    e.code = 'NEEDS_CONNECT';
-    throw e;
-  }
+  if (await trySilentRefresh()) return accessToken;
+  emit('disconnected');
+  const e = new Error('Google connection expired — tap the dot in the top bar to reconnect.');
+  e.code = 'NEEDS_CONNECT';
+  throw e;
 }
 
 export function disconnect() {
