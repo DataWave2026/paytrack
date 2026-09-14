@@ -501,3 +501,16 @@ test('jobToNote renders the user style', () => {
   assert.match(note, /\$955\/10 not yet paid/);
   assert.match(note, /\$1200\/gear paid/);
 });
+
+test('jobToNote carries check numbers per part', () => {
+  const note = jobToNote({
+    rate_amount: 991, rate_hours: 10, wages_status: 'paid',
+    gear_total: 1900, gear_status: 'paid',
+  }, { wages: '1000000001', gear: '1000000011' });
+  assert.match(note, /\$991\/10 paid \(check #1000000001\)/);
+  assert.match(note, /\$1900\/gear paid \(check #1000000011\)/);
+  // Unpaid parts never show a check reference.
+  const unpaid = jobToNote({ rate_amount: 991, rate_hours: 10, wages_status: 'unpaid', gear_status: 'na' },
+    { wages: '123' });
+  assert.ok(!/check/.test(unpaid));
+});

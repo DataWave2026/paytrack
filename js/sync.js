@@ -3,7 +3,22 @@
 import { settings, saveSettings } from './config.js';
 import * as g from './google.js';
 import * as store from './store.js';
-import { parseJobNote, looksLikeJob, jobToNote } from './parse.js';
+import { parseJobNote, looksLikeJob, jobToNote, gearOnStub } from './parse.js';
+
+// Which check paid the wages and which paid the gear, from matched stubs —
+// so the calendar note can carry the check numbers.
+async function checkRefs(job) {
+  const refs = { wages: '', gear: '' };
+  try {
+    const stubs = (await store.allStubs()).filter(s => s.matched_job_id === job.id && s.check_no);
+    for (const s of stubs) {
+      const gearPart = gearOnStub(s.earnings);
+      if (gearPart > 0 && !refs.gear) refs.gear = s.check_no;
+      if ((s.gross || 0) - gearPart > 0 && !refs.wages) refs.wages = s.check_no;
+    }
+  } catch {}
+  return refs;
+}
 import { log } from './log.js';
 
 const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_worked',
@@ -115,7 +130,7 @@ export async function pushJobToCalendar(job) {
   const base = {
     summary: (job.job_status === 'hold' ? 'HOLD: ' : '')
       + job.project + (job.company ? ` (${job.company})` : ''),
-    description: jobToNote(job) + (job.notes ? `\n${job.notes}` : ''),
+    description: jobToNote(job, await checkRefs(job)) + (job.notes ? `\n${job.notes}` : ''),
     extendedProperties: { private: { paytrackJobId: job.id } },
   };
   const perDay = (job.work_dates || []).filter(Boolean).sort();
