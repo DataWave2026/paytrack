@@ -343,15 +343,8 @@ function fillDayChips(box, start, end, sel, counter) {
   for (let d = start, i = 0; d <= (end || start) && i < 92; d = addDaysStr(d, 1), i++) days.push(d);
   if (days.length < 2) { if (counter) counter.textContent = ''; return days.length; }
   const upd = () => { if (counter) counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`; };
-  let lastMonth = '';
-  box.append(...days.flatMap(d => {
+  const chip = (d) => {
     const dt = new Date(d + 'T00:00:00');
-    const month = dt.toLocaleDateString('en-US', { month: 'short' });
-    const out = [];
-    if (days.length > 21 && month !== lastMonth) {
-      out.push(h('span', { class: 'daychip-month' }, `${month} ${dt.getFullYear()}`));
-      lastMonth = month;
-    }
     const b = h('button', {
       type: 'button', class: 'daychip' + (sel.has(d) ? ' on' : ''),
       onclick: () => {
@@ -359,12 +352,27 @@ function fillDayChips(box, start, end, sel, counter) {
         b.classList.toggle('on');
         upd();
       },
-    },
-      h('span', { class: 'dow' }, dt.toLocaleDateString('en-US', { weekday: 'short' })),
-      h('span', { class: 'dom' }, String(dt.getDate())));
-    out.push(b);
-    return out;
-  }));
+    }, h('span', { class: 'dom' }, String(dt.getDate())));
+    return b;
+  };
+  // Real calendar layout: one Sun-Sat grid per month, header row, days in
+  // their weekday column, blanks for out-of-range cells.
+  const byMonth = new Map();
+  for (const d of days) {
+    const key = d.slice(0, 7);
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key).push(d);
+  }
+  for (const [key, mdays] of byMonth) {
+    const first = new Date(mdays[0] + 'T00:00:00');
+    box.append(h('span', { class: 'daychip-month' },
+      first.toLocaleDateString('en-US', { month: 'short' }) + ' ' + first.getFullYear()));
+    const grid = h('div', { class: 'daycal' },
+      ...['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(w => h('span', { class: 'dowhead' }, w)),
+      ...Array.from({ length: first.getDay() }, () => h('span', {})),
+      ...mdays.map(chip));
+    box.append(grid);
+  }
   upd();
   return days.length;
 }
@@ -1485,7 +1493,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v68';
+const APP_VERSION = 'v69';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
