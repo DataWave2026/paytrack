@@ -74,6 +74,7 @@ export function blankJob() {
     id: uid(), project: '', company: '', start_date: '', end_date: '',
     days_worked: null,
     work_dates: [],            // specific days worked (ISO); empty = whole span
+    travel_dates: [],          // subset of work_dates paid as travel days (4-hr min)
     calendar_event_ids: [],    // per-day calendar events when work_dates is set
     rate_amount: null, rate_hours: null, rate_hourly: null, rate_text: '', gear_rate: null,
     gear_period: 'day', gear_total: null, wages_status: 'unpaid', gear_status: 'na',

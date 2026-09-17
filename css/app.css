@@ -212,7 +212,10 @@ a { color: var(--accent); }
   min-width: 0; padding: 8px 0; border-radius: 10px;
   border: 1px solid var(--line); background: var(--panel2);
   color: var(--muted); cursor: pointer;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
 }
+.daychip.travel, .daychip.on.travel { background: rgba(217,164,65,.18); border-color: #d9a441; color: #d9a441; }
+.daychip.travel .dom::after { content: 'T'; font-size: .58rem; font-weight: 700; vertical-align: super; margin-left: 2px; }
 .daychip-month { display: block; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 0 4px; }
 .daychip .dom { font-size: 1rem; font-weight: 600; }
 .daychip.on { background: rgba(76,195,138,.22); border-color: var(--accent); color: var(--accent); }
