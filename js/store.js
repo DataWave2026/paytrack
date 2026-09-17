@@ -78,6 +78,7 @@ export function blankJob() {
     calendar_event_ids: [],    // per-day calendar events when work_dates is set
     rate_amount: null, rate_hours: null, rate_hourly: null, rate_text: '', gear_rate: null,
     gear_period: 'day', gear_total: null, wages_status: 'unpaid', gear_status: 'na',
+    gear_invoices: [],         // weekly gear billing: [{start, end, amount, status: unsent|sent|paid}]
     paid_via: '',              // wages recipient: '' unknown | 'me' | 'company'
     gear_paid_via: '',         // gear recipient, independent of wages
     job_status: 'confirmed',   // 'confirmed' | 'hold' (potential/upcoming)

@@ -66,6 +66,20 @@ function jobDays(job) {
   return Math.max(1, d);
 }
 
+// Weekly gear billing: a job can carry one invoice per billed week, each with
+// its own sent/paid state. Returns null when the job doesn't bill weekly.
+function gearInv(job) {
+  const inv = job.gear_invoices || [];
+  if (!inv.length) return null;
+  const sum = a => a.reduce((s, i) => s + (i.amount || 0), 0);
+  const paid = inv.filter(i => i.status === 'paid');
+  const unsent = inv.filter(i => i.status === 'unsent');
+  // A week's money is due once that week has ended — no waiting for wrap.
+  const dueNow = inv.filter(i => i.status !== 'paid' && (i.end || i.start || '9999-99-99') <= today());
+  return { n: inv.length, nPaid: paid.length, nUnsent: unsent.length,
+    total: sum(inv), paidAmt: sum(paid), dueAmt: sum(dueNow), dueNow };
+}
+
 function isOverdue(job) {
   return Object.values(sync.jobDueDates(job)).some(d => d < today());
 }
@@ -119,7 +133,11 @@ async function home() {
   }
   const real = jobs.filter(j => j.job_status !== 'hold');
   const unpaidWages = real.filter(j => isWrapped(j) && j.wages_status !== 'paid');
-  const unpaidGear = real.filter(j => isWrapped(j) && j.gear_status !== 'paid' && j.gear_status !== 'na');
+  const unpaidGear = real.filter(j => {
+    const gi = gearInv(j);
+    if (gi) return gi.dueAmt > 0;   // weekly billing: due as each week ends
+    return isWrapped(j) && j.gear_status !== 'paid' && j.gear_status !== 'na';
+  });
   const overdue = jobs.filter(isOverdue);
   // Upcoming = future or in-progress jobs, plus EVERY unresolved hold (even
   // past-dated ones — a hold stays visible until confirmed or removed, so it
@@ -130,12 +148,20 @@ async function home() {
   // Recent = completed work only: wrapped on or before today, never holds or
   // future bookings (those live in Upcoming).
   const recent = real.filter(j => (j.end_date || j.start_date) && (j.end_date || j.start_date) <= today());
-  const gearOut = unpaidGear.reduce((s, j) => s + (j.gear_total || 0), 0);
+  const gearOut = unpaidGear.reduce((s, j) => {
+    const gi = gearInv(j);
+    return s + (gi ? gi.dueAmt : (j.gear_total || 0));
+  }, 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + (j.rate_amount ? j.rate_amount * jobDays(j) : 0), 0);
   // Red only when actually LATE (past the wages 14d / gear 30d timers, or a
   // job's own expected date); yellow = unpaid but still within terms.
   const lateWages = unpaidWages.some(j => (sync.jobDueDates(j).wages || '9999') < today());
-  const lateGear = unpaidGear.some(j => (sync.jobDueDates(j).gear || '9999') < today());
+  const lateGear = unpaidGear.some(j => {
+    const gi = gearInv(j);
+    if (gi) return gi.dueNow.some(i =>
+      addDaysStr(i.end || i.start, settings().alertDaysGear) < today());
+    return (sync.jobDueDates(j).gear || '9999') < today();
+  });
   const wagesTone = unpaidWages.length ? (lateWages ? 'bad' : 'warn') : 'ok';
   const gearTone = unpaidGear.length ? (lateGear ? 'bad' : 'warn') : 'ok';
 
@@ -153,8 +179,12 @@ async function home() {
     for (const j of real.filter(x => x.start_date?.startsWith(m))) {
       const w = jobWages(j, stubsByJob);
       if (w) { if (j.wages_status === 'paid') paidBucket(j.paid_via, w.amount); else if (isWrapped(j)) due += w.amount; }
-      if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
+      const gi = gearInv(j);
+      if (gi) {
         // Gear can be paid to a different recipient than wages.
+        if (gi.paidAmt) paidBucket(j.gear_paid_via || j.paid_via, gi.paidAmt);
+        due += gi.dueAmt;
+      } else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
         if (j.gear_status === 'paid') paidBucket(j.gear_paid_via || j.paid_via, j.gear_total);
         else if (isWrapped(j)) due += j.gear_total;
       }
@@ -251,7 +281,13 @@ function jobRow(job, stubsByJob) {
         },
       }, job.invoice_status === 'unsent' ? 'invoice: NOT SENT' : 'invoice: sent') : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
-      statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status)));
+      (() => {
+        const gi = job.job_status === 'hold' ? null : gearInv(job);
+        if (!gi) return statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status);
+        const cls = gi.nPaid === gi.n ? 'paid' : gi.nPaid ? 'partial' : 'unpaid';
+        return h('span', { class: 'badge ' + cls },
+          `gear inv: ${gi.nPaid}/${gi.n} paid${gi.nUnsent ? ` · ${gi.nUnsent} unsent` : ''}`);
+      })()));
 }
 
 // ---------- jobs ----------
@@ -538,6 +574,56 @@ async function editJob(existing, prefill) {
   gearHintUpdate();
   updateWorkChips();
 
+  // Weekly gear invoices: one per billed week, each sent/paid on its own.
+  const gearInvs = (job.gear_invoices || []).map(i => ({ ...i }));
+  const invBox = h('div', {});
+  const renderInvs = () => {
+    invBox.replaceChildren(...gearInvs.map((inv, idx) => {
+      const amt = h('input', { type: 'number', inputmode: 'decimal', placeholder: 'amount $', value: inv.amount ?? '' });
+      amt.addEventListener('input', e => inv.amount = e.target.value === '' ? null : parseFloat(e.target.value));
+      const ds = h('input', { type: 'date', value: inv.start || '' });
+      ds.addEventListener('input', e => inv.start = e.target.value);
+      const de = h('input', { type: 'date', value: inv.end || '' });
+      de.addEventListener('input', e => inv.end = e.target.value);
+      return h('div', { class: 'ginv' },
+        h('div', { class: 'ginv-head' },
+          h('span', { class: 'muted small' }, `Week ${idx + 1}`),
+          h('button', {
+            type: 'button', class: 'inline secondary', style: 'font-size:.68rem;padding:2px 8px',
+            onclick: () => { gearInvs.splice(idx, 1); renderInvs(); },
+          }, 'Remove')),
+        h('div', { class: 'row2' }, h('div', {}, ds), h('div', {}, de)),
+        h('div', { class: 'row2' },
+          h('div', {}, amt),
+          h('div', {}, segmented('ginv', inv.status || 'unsent',
+            [['unsent', 'Not sent'], ['sent', 'Sent'], ['paid', 'Paid']],
+            v => inv.status = v))));
+    }));
+  };
+  renderInvs();
+  const genWeeks = () => {
+    if (!job.start_date) return toast('Set the job dates first.');
+    if (gearInvs.length && !confirm('Replace the current weekly invoices with freshly generated weeks?')) return;
+    const end = job.end_date || job.start_date;
+    const list = [];
+    for (let s0 = job.start_date; s0 <= end; s0 = addDaysStr(s0, 7)) {
+      const e0 = addDaysStr(s0, 6) < end ? addDaysStr(s0, 6) : end;
+      let amount = null;
+      if (job.gear_rate) {
+        if (job.gear_period === 'week') amount = job.gear_rate;
+        else {
+          const daysIn = workSel.size
+            ? [...workSel].filter(d => d >= s0 && d <= e0).length
+            : Math.round((new Date(e0) - new Date(s0)) / 86400000) + 1;
+          amount = daysIn ? job.gear_rate * daysIn : null;
+        }
+      }
+      list.push({ start: s0, end: e0, amount, status: 'unsent' });
+    }
+    gearInvs.splice(0, gearInvs.length, ...list);
+    renderInvs();
+  };
+
   const form = h('div', { class: 'card' },
     h('h2', {}, existing ? 'Edit job' : 'New job'),
     existing ? h('button', {
@@ -607,6 +693,19 @@ async function editJob(existing, prefill) {
     segmented('gearpaidvia', job.gear_paid_via || '',
       [['', 'Same as wages / not set'], ['me', 'Me'], ['company', 'My company']],
       v => job.gear_paid_via = v),
+    h('label', {}, 'Weekly gear invoices (jobs billing gear per week — each week tracks its own sent / paid)'),
+    invBox,
+    h('div', { class: 'row2' },
+      h('div', {}, h('button', {
+        type: 'button', class: 'secondary',
+        onclick: () => {
+          gearInvs.push({ start: '', end: '', amount: job.gear_period === 'week' ? job.gear_rate : null, status: 'unsent' });
+          renderInvs();
+        },
+      }, '+ Add week')),
+      h('div', {}, h('button', { type: 'button', class: 'secondary', onclick: genWeeks }, 'Generate weeks from dates'))),
+    h('p', { class: 'muted small' },
+      'Leave empty for single-invoice gear. With weeks set, gear status and total derive from the weeks, each week is owed once it ends, and the daily invoice nag covers unsent weeks.'),
     h('label', {}, 'Invoice sent? ("Not sent" nags you daily by email until you flip it)'),
     segmented('invoice', job.invoice_status || 'na',
       [['na', 'No invoice'], ['unsent', 'Not sent'], ['sent', 'Sent']],
@@ -622,6 +721,14 @@ async function editJob(existing, prefill) {
         if (job.end_date && job.start_date && job.end_date < job.start_date) job.end_date = job.start_date;
         if (weeks > 1 && !job.start_date) return toast('Multi-week jobs need a first day (of week 1).');
         if (job.gear_status === 'na' && (job.gear_rate || job.gear_total)) job.gear_status = 'unpaid';
+        job.gear_invoices = gearInvs.filter(i => i.amount || i.start || i.end);
+        if (job.gear_invoices.length) {
+          // Weekly billing: status and total derive from the weeks.
+          const p = job.gear_invoices.filter(i => i.status === 'paid').length;
+          job.gear_status = p === job.gear_invoices.length ? 'paid' : p ? 'partial' : 'unpaid';
+          const invSum = job.gear_invoices.reduce((s, i) => s + (i.amount || 0), 0);
+          if (invSum) job.gear_total = invSum;
+        }
 
         const chosenDays = [...workSel]
           .filter(d => job.start_date && d >= job.start_date && d <= (job.end_date || job.start_date))
@@ -641,6 +748,11 @@ async function editJob(existing, prefill) {
               end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
               work_dates: chosenDays.map(d => addDaysStr(d, 7 * k)),
               travel_dates: job.travel_dates.map(d => addDaysStr(d, 7 * k)),
+              gear_invoices: job.gear_invoices.map(i => ({
+                ...i,
+                start: i.start ? addDaysStr(i.start, 7 * k) : '',
+                end: i.end ? addDaysStr(i.end, 7 * k) : '',
+              })),
               calendar_event_ids: [],
             });
           }
@@ -841,7 +953,12 @@ function totalsCard(jobsAll, stubsByJob) {
       if (!w.actual) estimated++;
       if (j.wages_status === 'paid') acc.wagesPaid += w.amount; else if (isWrapped(j)) acc.wagesDue += w.amount;
     } else noAmount++;
-    if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
+    const gi = gearInv(j);
+    if (gi) {
+      row.gear += gi.total;
+      acc.gearPaid += gi.paidAmt;
+      acc.gearDue += gi.dueAmt;
+    } else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
       row.gear += j.gear_total;
       if (j.gear_status === 'paid') acc.gearPaid += j.gear_total; else if (isWrapped(j)) acc.gearDue += j.gear_total;
     }
@@ -1540,7 +1657,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v70';
+const APP_VERSION = 'v71';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

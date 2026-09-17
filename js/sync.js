@@ -29,16 +29,17 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
   'no_cal', 'notes', 'updated_at', 'deleted',
   // Columns map to the Sheet by position — new ones must be appended here,
   // never inserted, or old rows parse shifted.
-  'rate_hourly', 'travel_dates'];
+  'rate_hourly', 'travel_dates', 'gear_invoices'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'payee', 'classification', 'job_title', 'payroll_employer', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
   'deductions', 'total_deductions',
   'created_at', 'updated_at'];
 
+const JSON_COLS = ['earnings', 'deductions', 'gear_invoices'];
 const toRow = (cols, rec) => cols.map(c => {
   const v = rec[c];
-  if (c === 'earnings' || c === 'deductions') return JSON.stringify(v || []);
+  if (JSON_COLS.includes(c)) return JSON.stringify(v || []);
   if (v === null || v === undefined) return '';
   if (Array.isArray(v)) return v.join('|');
   return String(v);
@@ -48,7 +49,7 @@ const fromRow = (cols, row) => {
   const rec = {};
   cols.forEach((c, i) => {
     let v = row[i] ?? '';
-    if (c === 'earnings' || c === 'deductions') {
+    if (JSON_COLS.includes(c)) {
       try { v = JSON.parse(v || '[]'); } catch { v = []; }
       rec[c] = v;
       return;
@@ -286,8 +287,12 @@ async function upsertPartReminder(job, part, idField, due) {
 // the day after wrap and disappears the moment the invoice is marked sent.
 async function upsertInvoiceReminder(job) {
   const s = settings();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  // Weekly gear invoices nag once their week has ended and they're not sent.
+  const gearUnsent = (job.gear_invoices || [])
+    .filter(i => i.status === 'unsent' && (i.end || i.start) && (i.end || i.start) <= todayIso);
   const wanted = !job.deleted && job.job_status !== 'hold'
-    && job.invoice_status === 'unsent' && (job.end_date || job.start_date);
+    && ((job.invoice_status === 'unsent' && (job.end_date || job.start_date)) || gearUnsent.length);
   if (!wanted) {
     if (job.invoice_reminder_event_id) {
       await g.deleteEvent(s.calendarId, job.invoice_reminder_event_id);
@@ -295,12 +300,20 @@ async function upsertInvoiceReminder(job) {
     }
     return;
   }
-  const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
-  let due = addDays(job.end_date || job.start_date, 1);
+  const tomorrow = addDays(todayIso, 1);
+  const dueDates = [];
+  if (job.invoice_status === 'unsent' && (job.end_date || job.start_date)) {
+    dueDates.push(addDays(job.end_date || job.start_date, 1));
+  }
+  for (const i of gearUnsent) dueDates.push(addDays(i.end || i.start, 1));
+  let due = dueDates.sort()[0];
   if (due < tomorrow) due = tomorrow;
+  const gearNote = gearUnsent.length
+    ? ` ${gearUnsent.length} weekly gear invoice${gearUnsent.length === 1 ? '' : 's'} unsent.`
+    : '';
   const event = {
     summary: `Send invoice: ${job.project || 'job'}`,
-    description: `PayTrack — invoice not sent yet. Mark it "Sent" in the app to stop this daily reminder.`,
+    description: `PayTrack — invoice not sent yet.${gearNote} Mark it "Sent" in the app to stop this daily reminder.`,
     start: { dateTime: `${due}T09:00:00` },
     end: { dateTime: `${due}T09:15:00` },
     recurrence: ['RRULE:FREQ=DAILY'],
