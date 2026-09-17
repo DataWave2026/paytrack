@@ -334,7 +334,7 @@ function addDaysStr(iso, n) {
 
 // Mini-calendar of tappable day chips for a date range. Returns the number
 // of days rendered (0/1 = no picker needed).
-function fillDayChips(box, start, end, sel, counter) {
+function fillDayChips(box, start, end, sel, counter, travelSel) {
   box.replaceChildren();
   if (!start) return 0;
   const days = [];
@@ -342,16 +342,52 @@ function fillDayChips(box, start, end, sel, counter) {
   // typo'd year exploding the picker).
   for (let d = start, i = 0; d <= (end || start) && i < 92; d = addDaysStr(d, 1), i++) days.push(d);
   if (days.length < 2) { if (counter) counter.textContent = ''; return days.length; }
-  const upd = () => { if (counter) counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`; };
+  const upd = () => {
+    if (!counter) return;
+    const t = travelSel ? [...travelSel].filter(x => sel.has(x)).length : 0;
+    counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`
+      + (t ? ` (${t} travel)` : '');
+  };
   const chip = (d) => {
     const dt = new Date(d + 'T00:00:00');
+    let lpTimer = null, lpFired = false;
+    const toggleTravel = () => {
+      if (travelSel.has(d)) travelSel.delete(d);
+      else {
+        travelSel.add(d);
+        if (!sel.has(d)) { sel.add(d); b.classList.add('on'); }
+      }
+      b.classList.toggle('travel', travelSel.has(d));
+      upd();
+    };
     const b = h('button', {
-      type: 'button', class: 'daychip' + (sel.has(d) ? ' on' : ''),
+      type: 'button',
+      class: 'daychip' + (sel.has(d) ? ' on' : '') + (travelSel?.has(d) ? ' travel' : ''),
       onclick: () => {
-        sel.has(d) ? sel.delete(d) : sel.add(d);
+        if (lpFired) { lpFired = false; return; }   // long-press already handled
+        if (sel.has(d)) {
+          sel.delete(d);
+          if (travelSel?.has(d)) { travelSel.delete(d); b.classList.remove('travel'); }
+        } else sel.add(d);
         b.classList.toggle('on');
         upd();
       },
+      // Travel-day marking: right-click on desktop, press-and-hold on phone.
+      oncontextmenu: (e) => {
+        if (!travelSel) return;
+        e.preventDefault();
+        // Some phones fire contextmenu after our long-press already toggled.
+        if (lpFired) { lpFired = false; return; }
+        toggleTravel();
+      },
+      onpointerdown: (e) => {
+        if (!travelSel || e.button === 2) return;
+        lpFired = false;
+        lpTimer = setTimeout(() => { lpFired = true; toggleTravel(); }, 500);
+      },
+      onpointerup: () => clearTimeout(lpTimer),
+      onpointerleave: () => clearTimeout(lpTimer),
+      onpointercancel: () => clearTimeout(lpTimer),
     }, h('span', { class: 'dom' }, String(dt.getDate())));
     return b;
   };
@@ -448,13 +484,16 @@ async function editJob(existing, prefill) {
   });
 
   const workSel = new Set(job.work_dates || []);
+  const travelSel = new Set(job.travel_dates || []);
   const workBox = h('div', { class: 'daychips' });
   const workCounter = h('p', { class: 'muted small' }, '');
   const workWrap = h('div', {},
     h('label', {}, 'Which days were actually worked? (only these get calendar events)'),
-    workBox, workCounter);
+    workBox, workCounter,
+    h('p', { class: 'muted small' },
+      'Right-click a day (press and hold on phone) to mark it as a travel day — estimated at the 4-hour minimum until the stub arrives.'));
   const updateWorkChips = () => {
-    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter);
+    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel);
     workWrap.style.display = n > 1 ? '' : 'none';
   };
 
@@ -588,6 +627,7 @@ async function editJob(existing, prefill) {
           .filter(d => job.start_date && d >= job.start_date && d <= (job.end_date || job.start_date))
           .sort();
         job.work_dates = chosenDays;
+        job.travel_dates = chosenDays.filter(d => travelSel.has(d));
         if (chosenDays.length) job.days_worked = chosenDays.length;
 
         const toSave = [];
@@ -600,6 +640,7 @@ async function editJob(existing, prefill) {
               start_date: addDaysStr(job.start_date, 7 * k),
               end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
               work_dates: chosenDays.map(d => addDaysStr(d, 7 * k)),
+              travel_dates: job.travel_dates.map(d => addDaysStr(d, 7 * k)),
               calendar_event_ids: [],
             });
           }
@@ -772,7 +813,13 @@ function jobWages(job, stubsByJob) {
     if (wagePart > 0) { sum += wagePart; any = true; }
   }
   if (any) return { amount: sum, actual: true };
-  if (job.rate_amount) return { amount: job.rate_amount * jobDays(job), actual: false };
+  if (job.rate_amount) {
+    // Travel days guarantee a 4-hour minimum, not a full day.
+    const travel = Math.min((job.travel_dates || []).length, jobDays(job));
+    const full = jobDays(job) - travel;
+    const hourly = job.rate_hourly || job.rate_amount / (job.rate_hours || 10);
+    return { amount: job.rate_amount * full + hourly * 4 * travel, actual: false };
+  }
   return null;
 }
 
@@ -1493,7 +1540,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v69';
+const APP_VERSION = 'v70';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
