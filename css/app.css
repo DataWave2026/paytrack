@@ -220,6 +220,10 @@ a { color: var(--accent); }
 .daychip .dom { font-size: 1rem; font-weight: 600; }
 .daychip.on { background: rgba(76,195,138,.22); border-color: var(--accent); color: var(--accent); }
 
+.ginv { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px 10px; margin-bottom: 8px; }
+.ginv-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.ginv input { margin-bottom: 6px; }
+
 .earnrow { display: grid; grid-template-columns: 2fr 1fr 1.1fr 1.2fr auto; gap: 6px; margin-bottom: 6px; }
 .earnrow input { padding: 8px; font-size: .85rem; min-width: 0; }
 
