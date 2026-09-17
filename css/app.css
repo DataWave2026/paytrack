@@ -211,6 +211,7 @@ a { color: var(--accent); }
   border: 1px solid var(--line); background: var(--panel2);
   color: var(--muted); cursor: pointer;
 }
+.daychip-month { flex-basis: 100%; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 0 -2px; }
 .daychip .dow { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; }
 .daychip .dom { font-size: 1rem; font-weight: 600; }
 .daychip.on { background: rgba(76,195,138,.22); border-color: var(--accent); color: var(--accent); }

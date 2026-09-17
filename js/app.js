@@ -338,11 +338,20 @@ function fillDayChips(box, start, end, sel, counter) {
   box.replaceChildren();
   if (!start) return 0;
   const days = [];
-  for (let d = start, i = 0; d <= (end || start) && i < 21; d = addDaysStr(d, 1), i++) days.push(d);
+  // Long shows span many weeks; 92 days covers a quarter (guards against a
+  // typo'd year exploding the picker).
+  for (let d = start, i = 0; d <= (end || start) && i < 92; d = addDaysStr(d, 1), i++) days.push(d);
   if (days.length < 2) { if (counter) counter.textContent = ''; return days.length; }
   const upd = () => { if (counter) counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`; };
-  box.append(...days.map(d => {
+  let lastMonth = '';
+  box.append(...days.flatMap(d => {
     const dt = new Date(d + 'T00:00:00');
+    const month = dt.toLocaleDateString('en-US', { month: 'short' });
+    const out = [];
+    if (days.length > 21 && month !== lastMonth) {
+      out.push(h('span', { class: 'daychip-month' }, `${month} ${dt.getFullYear()}`));
+      lastMonth = month;
+    }
     const b = h('button', {
       type: 'button', class: 'daychip' + (sel.has(d) ? ' on' : ''),
       onclick: () => {
@@ -353,7 +362,8 @@ function fillDayChips(box, start, end, sel, counter) {
     },
       h('span', { class: 'dow' }, dt.toLocaleDateString('en-US', { weekday: 'short' })),
       h('span', { class: 'dom' }, String(dt.getDate())));
-    return b;
+    out.push(b);
+    return out;
   }));
   upd();
   return days.length;
@@ -1475,7 +1485,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v67';
+const APP_VERSION = 'v68';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
