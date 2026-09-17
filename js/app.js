@@ -425,6 +425,7 @@ async function editJob(existing, prefill) {
         : e.target.value;
       if (['gear_rate', 'days_worked', 'start_date', 'end_date'].includes(key)) gearHintUpdate();
       if (['start_date', 'end_date'].includes(key)) updateWorkChips();
+      if (['rate_hourly', 'rate_hours'].includes(key)) hourlyUpdate();
     },
   });
 
@@ -442,7 +443,30 @@ async function editJob(existing, prefill) {
   const hoursInput = input('rate_hours', { type: 'number', inputmode: 'numeric', placeholder: 'other' });
   const hoursSeg = segmented('hours', String(job.rate_hours || ''),
     [['10', '10 hr'], ['12', '12 hr']],
-    v => { job.rate_hours = parseInt(v, 10); hoursInput.value = v; });
+    v => { job.rate_hours = parseInt(v, 10); hoursInput.value = v; hourlyUpdate(); });
+
+  // Hourly-deal helper: hourly rate x guaranteed hours fills the pre-tax
+  // guaranteed day total. 'straight' = hourly x hours (how the user's
+  // productions quote it); 'union' = 1.5x after 8.
+  let hourlyMode = 'straight';
+  const rateAmountInput = input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' });
+  const hourlyInput = input('rate_hourly', { type: 'number', inputmode: 'decimal', placeholder: '87' });
+  const hourlyHint = h('p', { class: 'muted small' }, '');
+  const hourlyUpdate = () => {
+    const hr = job.rate_hourly, hrs = job.rate_hours;
+    if (!hr) { hourlyHint.textContent = ''; return; }
+    if (!hrs) { hourlyHint.textContent = 'Set guaranteed hours above to calculate the day total.'; return; }
+    const day = hourlyMode === 'union' && hrs > 8 ? hr * (8 + 1.5 * (hrs - 8)) : hr * hrs;
+    job.rate_amount = Math.round(day * 100) / 100;
+    rateAmountInput.value = job.rate_amount;
+    hourlyHint.textContent = `= ${fmt$(job.rate_amount)} pre-tax guaranteed / day (`
+      + (hourlyMode === 'union' && hrs > 8
+        ? `$${hr}/hr, 1.5x after 8: 8 + ${((hrs - 8) * 1.5).toFixed(1)} paid hrs)`
+        : `$${hr}/hr x ${hrs} hrs)`);
+  };
+  const hourlyModeSeg = segmented('hourlymode', 'straight',
+    [['straight', 'Straight x hrs'], ['union', '1.5x after 8']],
+    v => { hourlyMode = v; hourlyUpdate(); });
 
   const gearHint = h('p', { class: 'muted small' }, '');
   const gearHintUpdate = () => {
@@ -467,7 +491,7 @@ async function editJob(existing, prefill) {
           ...store.blankJob(),
           project: nextPartName(job.project),
           company: job.company,
-          rate_amount: job.rate_amount, rate_hours: job.rate_hours, rate_text: job.rate_text,
+          rate_amount: job.rate_amount, rate_hours: job.rate_hours, rate_hourly: job.rate_hourly, rate_text: job.rate_text,
           gear_rate: job.gear_rate, gear_period: job.gear_period,
           gear_status: job.gear_status === 'na' ? 'na' : 'unpaid',
           paid_via: job.paid_via, gear_paid_via: job.gear_paid_via,
@@ -497,9 +521,12 @@ async function editJob(existing, prefill) {
         oninput: (e) => weeks = Math.max(1, parseInt(e.target.value, 10) || 1),
       })),
     h('label', {}, 'Wages / day ($)'),
-    input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' }),
+    rateAmountInput,
     h('label', {}, 'Guaranteed hours'),
     h('div', { class: 'row2' }, h('div', {}, hoursSeg), h('div', {}, hoursInput)),
+    h('label', {}, 'Hourly rate ($, if the deal is quoted hourly — fills the day total above)'),
+    h('div', { class: 'row2' }, h('div', {}, hourlyInput), h('div', {}, hourlyModeSeg)),
+    hourlyHint,
     h('label', {}, 'Rate note (if not day rate — e.g. "scale", "$87/hr")'), input('rate_text', { placeholder: 'scale' }),
     h('label', {}, 'Wages'),
     segmented('wages', job.wages_status,
@@ -1448,7 +1475,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v66';
+const APP_VERSION = 'v67';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

@@ -37,6 +37,20 @@ test('no project name: dates + rate still find it', () => {
   assert.equal(m[0].job.id, 'a');
 });
 
+test('hourly-quoted job matches the stub hourly directly', () => {
+  const hourly = [...jobs, { id: 'h', project: 'Hourly Gig', start_date: '2026-09-01',
+    end_date: '2026-09-02', rate_amount: 1740, rate_hours: 20, rate_hourly: 87,
+    wages_status: 'unpaid' }];
+  const stub = {
+    project_name: '', employer: 'Some Payroll Co',
+    period_start: '2026-09-01', period_end: '2026-09-02',
+    hourly_rates: [87],
+  };
+  const m = matchStub(stub, hourly);
+  assert.equal(m[0].job.id, 'h');
+  assert.ok(m[0].reasons.includes('rate matches'));
+});
+
 test('irrelevant stub matches nothing strongly', () => {
   const stub = {
     project_name: 'Totally Different Show', employer: 'Elsewhere Inc',

@@ -33,8 +33,10 @@ export function rateVariants(rateAmount, rateHours) {
 }
 
 function rateScore(stub, job) {
-  if (!stub.hourly_rates?.length || !job.rate_amount) return 0;
+  if (!stub.hourly_rates?.length || (!job.rate_amount && !job.rate_hourly)) return 0;
   const variants = rateVariants(job.rate_amount, job.rate_hours);
+  // A job entered by hourly rate matches the stub's hourly directly.
+  if (job.rate_hourly) variants.push(job.rate_hourly);
   for (const hr of stub.hourly_rates) {
     for (const v of variants) {
       if (Math.abs(hr - v) / v <= 0.02) return 20;
