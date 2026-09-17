@@ -26,7 +26,10 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
   'rate_hours', 'rate_text', 'gear_rate', 'gear_period', 'gear_total', 'wages_status', 'gear_status', 'paid_via', 'gear_paid_via', 'job_status',
   'invoice_status', 'invoice_reminder_event_id',
   'expected_pay_date', 'calendar_event_id', 'reminder_event_id', 'gear_reminder_event_id',
-  'no_cal', 'notes', 'updated_at', 'deleted'];
+  'no_cal', 'notes', 'updated_at', 'deleted',
+  // Columns map to the Sheet by position — new ones must be appended here,
+  // never inserted, or old rows parse shifted.
+  'rate_hourly'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'payee', 'classification', 'job_title', 'payroll_employer', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
@@ -50,7 +53,7 @@ const fromRow = (cols, row) => {
       rec[c] = v;
       return;
     }
-    if (['days_worked', 'rate_amount', 'rate_hours', 'gear_rate', 'gear_total', 'hours', 'gross', 'net', 'total_deductions'].includes(c)) {
+    if (['days_worked', 'rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate', 'gear_total', 'hours', 'gross', 'net', 'total_deductions'].includes(c)) {
       v = v === '' ? null : parseFloat(v);
     } else if (c === 'deleted' || c === 'no_cal') v = v === 'true';
     else if (c === 'hourly_rates') v = v ? v.split('|').map(Number) : [];
@@ -90,10 +93,10 @@ export async function mirrorSheet() {
   await pullSheet().catch(() => {});
   const jobs = await store.allJobs({ includeDeleted: true });
   const stubs = await store.allStubs();
-  await g.clearRange(s.sheetId, 'Jobs!A2:Z');
+  await g.clearRange(s.sheetId, 'Jobs!A2:ZZ');
   await g.writeRange(s.sheetId, 'Jobs!A1',
     [JOB_COLS, ...jobs.map(j => toRow(JOB_COLS, j))]);
-  await g.clearRange(s.sheetId, 'Paystubs!A2:Z');
+  await g.clearRange(s.sheetId, 'Paystubs!A2:ZZ');
   await g.writeRange(s.sheetId, 'Paystubs!A1',
     [STUB_COLS, ...stubs.map(st => toRow(STUB_COLS, st))]);
   saveSettings({ lastSheetSync: store.now() });
@@ -102,12 +105,12 @@ export async function mirrorSheet() {
 export async function pullSheet() {
   const s = settings();
   if (!s.sheetId) return;
-  const jobRows = await g.readRange(s.sheetId, 'Jobs!A2:Z');
+  const jobRows = await g.readRange(s.sheetId, 'Jobs!A2:ZZ');
   for (const row of jobRows) {
     const rec = fromRow(JOB_COLS, row);
     if (rec.id) await store.mergeRecord('jobs', rec);
   }
-  const stubRows = await g.readRange(s.sheetId, 'Paystubs!A2:Z');
+  const stubRows = await g.readRange(s.sheetId, 'Paystubs!A2:ZZ');
   for (const row of stubRows) {
     const rec = fromRow(STUB_COLS, row);
     if (rec.id) await store.mergeRecord('stubs', rec);
