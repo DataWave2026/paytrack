@@ -45,23 +45,45 @@ const toRow = (cols, rec) => cols.map(c => {
   return String(v);
 });
 
-const fromRow = (cols, row) => {
-  const rec = {};
-  cols.forEach((c, i) => {
-    let v = row[i] ?? '';
-    if (JSON_COLS.includes(c)) {
-      try { v = JSON.parse(v || '[]'); } catch { v = []; }
-      rec[c] = v;
-      return;
+const NUM_COLS = ['days_worked', 'rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate',
+  'gear_total', 'hours', 'gross', 'net', 'total_deductions'];
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+const coerce = (c, raw) => {
+  const v = raw ?? '';
+  if (JSON_COLS.includes(c)) {
+    try { const p = JSON.parse(v || '[]'); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  if (NUM_COLS.includes(c)) {
+    const n = parseFloat(v);
+    return v === '' || Number.isNaN(n) ? null : n;
+  }
+  if (c === 'deleted' || c === 'no_cal') return v === 'true';
+  if (c === 'hourly_rates') return v ? v.split('|').map(Number).filter(n => !Number.isNaN(n)) : [];
+  if (c === 'work_dates' || c === 'travel_dates') return v ? v.split('|').filter(d => ISO_DAY.test(d)) : [];
+  if (c === 'calendar_event_ids') return v ? v.split('|') : [];
+  return v;
+};
+
+// Rows are mapped by the sheet's OWN header row, never by position. Devices on
+// different app versions write different column sets, and positional mapping
+// let one version's rows be read against another version's columns — stale
+// cells (including a neighboring row's `deleted` flag) leaked across jobs,
+// corrupting totals and tombstoning live jobs. A column the writing device
+// didn't know is simply absent from the record and survives the merge.
+const fromRows = (cols, rows) => {
+  const header = (rows[0] || []).map(String);
+  const known = header.filter(hc => cols.includes(hc));
+  return rows.slice(1).map(row => {
+    const rec = {};
+    if (known.length >= 5) {
+      header.forEach((hc, i) => { if (cols.includes(hc)) rec[hc] = coerce(hc, row[i]); });
+    } else {
+      // No sane header (hand-edited sheet): fall back to positional.
+      cols.forEach((c, i) => rec[c] = coerce(c, row[i]));
     }
-    if (['days_worked', 'rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate', 'gear_total', 'hours', 'gross', 'net', 'total_deductions'].includes(c)) {
-      v = v === '' ? null : parseFloat(v);
-    } else if (c === 'deleted' || c === 'no_cal') v = v === 'true';
-    else if (c === 'hourly_rates') v = v ? v.split('|').map(Number) : [];
-    else if (c === 'work_dates' || c === 'travel_dates' || c === 'calendar_event_ids') v = v ? v.split('|') : [];
-    rec[c] = v;
+    return rec;
   });
-  return rec;
 };
 
 // ---------- Bootstrap (first connect) ----------
@@ -106,14 +128,12 @@ export async function mirrorSheet() {
 export async function pullSheet() {
   const s = settings();
   if (!s.sheetId) return;
-  const jobRows = await g.readRange(s.sheetId, 'Jobs!A2:ZZ');
-  for (const row of jobRows) {
-    const rec = fromRow(JOB_COLS, row);
+  const jobRows = await g.readRange(s.sheetId, 'Jobs!A1:ZZ');
+  for (const rec of fromRows(JOB_COLS, jobRows)) {
     if (rec.id) await store.mergeRecord('jobs', rec);
   }
-  const stubRows = await g.readRange(s.sheetId, 'Paystubs!A2:ZZ');
-  for (const row of stubRows) {
-    const rec = fromRow(STUB_COLS, row);
+  const stubRows = await g.readRange(s.sheetId, 'Paystubs!A1:ZZ');
+  for (const rec of fromRows(STUB_COLS, stubRows)) {
     if (rec.id) await store.mergeRecord('stubs', rec);
   }
   store.notifyChanged();
