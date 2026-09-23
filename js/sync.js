@@ -487,9 +487,10 @@ export async function pullCalendar() {
   try {
     ({ items } = await g.listEvents(s.calendarId, params(s.lastCalPull || recent())));
   } catch (e) {
-    // Google rejects an updatedMin that lies too far in the past (410) —
-    // fall back to a recent window and carry on.
-    if (/410/.test(e.message)) {
+    // Google rejects an updatedMin that lies too far in the past (410) or is
+    // malformed (400) — fall back to a recent window and carry on.
+    if (/4(00|10)/.test(e.message)) {
+      log('pullCalRetry', { msg: String(e.message).slice(0, 200) });
       ({ items } = await g.listEvents(s.calendarId, params(recent())));
     } else throw e;
   }

@@ -1623,8 +1623,21 @@ async function settingsView() {
           : 'Connect Google to create the PayTrack DB sheet.'),
       h('button', {
         class: 'secondary', onclick: async () => {
-          try { await sync.pullSheet(); await sync.pullCalendar(); await sync.mirrorSheet(); toast('Synced ✓'); }
-          catch (e) { toast(e.message, 6000); }
+          // Every stage runs even if one fails — the sheet upload (this
+          // device's data reaching the cloud) must never be blocked by a
+          // calendar error.
+          const errs = [];
+          for (const [name, fn] of [
+            ['sheet pull', () => sync.pullSheet()],
+            ['calendar', () => sync.pullCalendar()],
+            ['sheet upload', () => sync.mirrorSheet()],
+          ]) {
+            try { await fn(); } catch (e) {
+              errs.push(`${name}: ${e.message}`);
+              log('syncNow:' + name, { msg: String(e.message).slice(0, 200) });
+            }
+          }
+          toast(errs.length ? `Synced with errors — ${errs.join(' · ')}` : 'Synced ✓', errs.length ? 9000 : 3000);
         },
       }, 'Sync now'),
       h('p', { class: 'muted small mt' },
@@ -1691,7 +1704,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v73';
+const APP_VERSION = 'v74';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1821,17 +1834,29 @@ async function backgroundSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
   try {
     await auth.token();               // silent refresh if possible
-    await sync.pullCalendar();
-    await sync.pullSheet();
-    await sync.pushUnsynced();
-    // Upload as well as download: a job created while this device was
-    // offline/disconnected must still reach the sheet eventually.
-    await sync.mirrorSheet();
-    log('sync', { ok: true });
   } catch (e) {
     log('sync', { ok: false, code: e.code || '', msg: String(e.message).slice(0, 160) });
-    if (e.code !== 'NEEDS_CONNECT') console.warn('sync', e);
+    return;
   }
+  // Each stage runs even when an earlier one fails — a calendar hiccup must
+  // never strand this device's data outside the sheet.
+  const errs = [];
+  for (const [name, fn] of [
+    ['pullCalendar', () => sync.pullCalendar()],
+    ['pullSheet', () => sync.pullSheet()],
+    ['pushUnsynced', () => sync.pushUnsynced()],
+    // Upload as well as download: a job created while this device was
+    // offline/disconnected must still reach the sheet eventually.
+    ['mirrorSheet', () => sync.mirrorSheet()],
+  ]) {
+    try { await fn(); } catch (e) {
+      errs.push(name);
+      log('sync:' + name, { ok: false, code: e.code || '', msg: String(e.message).slice(0, 200) });
+      if (e.code === 'NEEDS_CONNECT') return;
+      console.warn('sync', name, e);
+    }
+  }
+  log('sync', { ok: !errs.length, failed: errs });
 }
 
 if ('serviceWorker' in navigator) {
