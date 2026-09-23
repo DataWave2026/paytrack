@@ -1655,6 +1655,26 @@ async function settingsView() {
           },
         }, 'Copy diagnostics'), ' · ',
         h('a', {
+          href: '#', onclick: async (e) => {
+            e.preventDefault();
+            // Full snapshot: log + every job and payment record, saved as a
+            // file that can be shared/dropped straight into a Claude session.
+            const report = {
+              version: APP_VERSION, ua: navigator.userAgent, time: new Date().toISOString(),
+              settings: settings(), log: dump(),
+              jobs: await store.allJobs({ includeDeleted: true }),
+              stubs: await store.allStubs(),
+            };
+            const blob = new Blob([JSON.stringify(report, null, 1)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `paytrack-bug-report-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+            toast('Bug report saved — send the file to Claude to debug.');
+          },
+        }, 'Download bug report'), ' · ',
+        h('a', {
           href: '#', onclick: (e) => { e.preventDefault(); clearLog(); toast('Diagnostics log cleared.'); },
         }, 'clear')),
       h('button', {
@@ -1709,7 +1729,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v76';
+const APP_VERSION = 'v77';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
