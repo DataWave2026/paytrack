@@ -114,6 +114,7 @@ export async function mirrorSheet() {
   // Merge remote rows first so a full-table write never clobbers a job that
   // another device added since our last pull.
   await pullSheet().catch(() => {});
+  await store.dropStubHusks().catch(() => {});
   const jobs = await store.allJobs({ includeDeleted: true });
   const stubs = await store.allStubs();
   await g.clearRange(s.sheetId, 'Jobs!A2:ZZ');

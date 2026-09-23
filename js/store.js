@@ -114,6 +114,24 @@ export async function putJob(job, { silent = false } = {}) {
 // Merge a record from a remote source (Sheet); newest updated_at wins —
 // EXCEPT deletion, which is a tombstone: once either side has deleted a
 // record, no sync may resurrect it.
+// Failed-scan husks: a stub with NO check number duplicating another stub for
+// the same job + check date is a retried scan. Keep the most complete one
+// (highest gross). Runs at boot AND inside every sheet mirror — stub deletes
+// have no tombstones, so pull-before-write would otherwise re-import them.
+export async function dropStubHusks() {
+  const grps = {};
+  for (const s of await allStubs()) {
+    if (!s.check_no) (grps[`${s.matched_job_id}|${s.check_date}`] ||= []).push(s);
+  }
+  let n = 0;
+  for (const grp of Object.values(grps)) {
+    if (grp.length < 2) continue;
+    grp.sort((a, b) => (b.gross || 0) - (a.gross || 0));
+    for (const d of grp.slice(1)) { await deleteStub(d.id); n++; }
+  }
+  return n;
+}
+
 export async function mergeRecord(storeName, rec) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
