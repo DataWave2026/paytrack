@@ -1564,6 +1564,11 @@ async function settingsView() {
         class: 'inline secondary', style: 'font-size:.7rem;padding:4px 9px',
         onclick: async () => {
           j.deleted = false;
+          // Forget old event links: those events were cancelled when the job
+          // was deleted, and a restored job must get fresh ones instead of
+          // being re-tombstoned by its own stale cancellations.
+          j.calendar_event_id = '';
+          j.calendar_event_ids = [];
           await store.putJob(j);
           log('jobRestored', { project: j.project });
           if (auth.isConnected()) {
@@ -1704,7 +1709,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v74';
+const APP_VERSION = 'v75';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1764,6 +1769,22 @@ async function dedupeChecks() {
         await store.putJob(dup, { silent: true });
         removed++;
         log('dedupeJob', { project: dup.project });
+      }
+    }
+    // Failed-scan husks: a stub with NO check number duplicating another
+    // stub for the same job + check date is a retried scan. Keep the most
+    // complete one (highest gross).
+    const noCheck = {};
+    for (const s of await store.allStubs()) {
+      if (!s.check_no) (noCheck[`${s.matched_job_id}|${s.check_date}`] ||= []).push(s);
+    }
+    for (const grp of Object.values(noCheck)) {
+      if (grp.length < 2) continue;
+      grp.sort((a, b) => (b.gross || 0) - (a.gross || 0));
+      for (const dupe of grp.slice(1)) {
+        await store.deleteStub(dupe.id);
+        removed++;
+        log('dedupeStubNoCheck', { job: dupe.matched_job_id, date: dupe.check_date });
       }
     }
     // Scrub structurally-invalid fields that positional sheet reads (pre-v72

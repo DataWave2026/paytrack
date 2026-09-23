@@ -502,7 +502,16 @@ export async function pullCalendar() {
       // touch it (its event may deliberately outlive it).
       if (!job || job.deleted) continue;
       if ((ev.updated || '') <= (job.updated_at || '')) continue;  // our own push
-      if (ev.status === 'cancelled') { job.deleted = true; }
+      if (ev.status === 'cancelled') {
+        // Only a CURRENTLY-linked event's cancellation means the user removed
+        // the job from the calendar. The app itself cancels stale tagged
+        // events whenever a push replaces them — treating those as user
+        // deletions created a loop that re-tombstoned restored jobs.
+        const known = ev.id === job.calendar_event_id
+          || (job.calendar_event_ids || []).includes(ev.id);
+        if (!known) continue;
+        job.deleted = true;
+      }
       else {
         // Jobs with specific worked days have several events; a single event's
         // dates must not overwrite the job's overall range.
