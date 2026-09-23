@@ -1709,7 +1709,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v75';
+const APP_VERSION = 'v76';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1771,22 +1771,7 @@ async function dedupeChecks() {
         log('dedupeJob', { project: dup.project });
       }
     }
-    // Failed-scan husks: a stub with NO check number duplicating another
-    // stub for the same job + check date is a retried scan. Keep the most
-    // complete one (highest gross).
-    const noCheck = {};
-    for (const s of await store.allStubs()) {
-      if (!s.check_no) (noCheck[`${s.matched_job_id}|${s.check_date}`] ||= []).push(s);
-    }
-    for (const grp of Object.values(noCheck)) {
-      if (grp.length < 2) continue;
-      grp.sort((a, b) => (b.gross || 0) - (a.gross || 0));
-      for (const dupe of grp.slice(1)) {
-        await store.deleteStub(dupe.id);
-        removed++;
-        log('dedupeStubNoCheck', { job: dupe.matched_job_id, date: dupe.check_date });
-      }
-    }
+    removed += await store.dropStubHusks();
     // Scrub structurally-invalid fields that positional sheet reads (pre-v72
     // mixed-version bug) may have leaked in from neighboring rows.
     const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
