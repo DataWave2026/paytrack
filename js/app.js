@@ -69,7 +69,7 @@ function jobDays(job) {
 // Weekly gear billing: a job can carry one invoice per billed week, each with
 // its own sent/paid state. Returns null when the job doesn't bill weekly.
 function gearInv(job) {
-  const inv = job.gear_invoices || [];
+  const inv = Array.isArray(job.gear_invoices) ? job.gear_invoices : [];
   if (!inv.length) return null;
   const sum = a => a.reduce((s, i) => s + (i.amount || 0), 0);
   const paid = inv.filter(i => i.status === 'paid');
@@ -1542,6 +1542,35 @@ async function settingsView() {
       },
     }, 'Clean duplicate calendar events'));
 
+  // Safety net: deleted jobs stay recoverable — a sync bug (or a mistaken
+  // delete) can be undone here instead of re-typing the job.
+  const removedJobs = (await store.allJobs({ includeDeleted: true }))
+    .filter(j => j.deleted)
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+    .slice(0, 20);
+  const removedCard = removedJobs.length ? h('details', { class: 'card' },
+    h('summary', {}, `Removed jobs (${removedJobs.length}) — restore`),
+    h('p', { class: 'muted small' }, 'Jobs deleted in the app (on any device). Restore brings one back everywhere, with its payment records.'),
+    removedJobs.map(j => h('div', { class: 'job' },
+      h('div', {},
+        h('div', { class: 'title' }, j.project || '(untitled)'),
+        h('div', { class: 'sub' }, [fmtRange(j.start_date, j.end_date),
+          `removed ${(j.updated_at || '').slice(0, 10)}`].filter(Boolean).join(' · '))),
+      h('div', { class: 'badges' }, h('button', {
+        class: 'inline secondary', style: 'font-size:.7rem;padding:4px 9px',
+        onclick: async () => {
+          j.deleted = false;
+          await store.putJob(j);
+          log('jobRestored', { project: j.project });
+          if (auth.isConnected()) {
+            sync.pushJob(j).catch(() => {});
+            sync.scheduleMirror();
+          }
+          toast(`"${j.project}" restored.`);
+          render('settings');
+        },
+      }, 'Restore'))))) : null;
+
   return h('div', {},
     h('div', { class: 'card' },
       h('h2', {}, 'Google connection'),
@@ -1617,6 +1646,7 @@ async function settingsView() {
           location.reload();
         },
       }, `Force update (running ${APP_VERSION})`)),
+    removedCard,
   );
 }
 
@@ -1657,7 +1687,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v71';
+const APP_VERSION = 'v72';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1718,6 +1748,25 @@ async function dedupeChecks() {
         removed++;
         log('dedupeJob', { project: dup.project });
       }
+    }
+    // Scrub structurally-invalid fields that positional sheet reads (pre-v72
+    // mixed-version bug) may have leaked in from neighboring rows.
+    const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+    for (const job of await store.allJobs({ includeDeleted: true })) {
+      let dirty = false;
+      for (const k of ['work_dates', 'travel_dates', 'calendar_event_ids', 'gear_invoices']) {
+        if (job[k] !== undefined && !Array.isArray(job[k])) { job[k] = []; dirty = true; }
+      }
+      for (const k of ['work_dates', 'travel_dates']) {
+        const clean = (job[k] || []).filter(d => ISO_DAY.test(d));
+        if (clean.length !== (job[k] || []).length) { job[k] = clean; dirty = true; }
+      }
+      const badInv = (job.gear_invoices || []).filter(i => !i || typeof i !== 'object');
+      if (badInv.length) { job.gear_invoices = job.gear_invoices.filter(i => i && typeof i === 'object'); dirty = true; }
+      for (const k of ['rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate', 'gear_total', 'days_worked']) {
+        if (typeof job[k] === 'number' && Number.isNaN(job[k])) { job[k] = null; dirty = true; }
+      }
+      if (dirty) { await store.putJob(job, { silent: true }); log('scrubJob', { project: job.project }); }
     }
     const jobs = await store.allJobs();
     for (const job of jobs) {

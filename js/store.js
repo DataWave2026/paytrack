@@ -123,9 +123,12 @@ export async function mergeRecord(storeName, rec) {
     g.onsuccess = () => {
       const local = g.result;
       if (!local) { s.put(rec); return; }
-      if (local.deleted) return;                       // tombstone wins
-      if (rec.deleted) { s.put({ ...local, ...rec, deleted: true }); return; }
-      if ((rec.updated_at || '') > (local.updated_at || '')) s.put(rec);
+      // Newest edit wins, deletion included: a delete only sticks while it is
+      // the latest event, so restoring a job (fresh updated_at) beats stale
+      // tombstones from other devices. Spread over local: a column the
+      // writing device's app version didn't know is absent from rec and must
+      // not wipe the local value.
+      if ((rec.updated_at || '') > (local.updated_at || '')) s.put({ ...local, ...rec });
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
