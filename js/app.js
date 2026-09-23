@@ -337,9 +337,13 @@ async function jobs() {
   return h('div', {},
     h('button', { class: 'primary', onclick: () => editJob(null) }, '+ Add job'),
     jobs.length ? cards : h('div', { class: 'card mt' }, h('p', { class: 'muted' }, 'Nothing yet.')),
-    jobs.length ? h('div', { class: 'card' },
-      h('h2', {}, `All jobs (${jobs.length})`),
-      listTotalsLine(jobs, stubsByJob, 'Grand total (excl. holds)')) : null,
+    jobs.length ? (() => {
+      const gs = sumJobs(jobs, stubsByJob);
+      return h('details', { class: 'card' },
+        h('summary', {}, `All jobs (${jobs.length}) — ${gs.est ? '~' : ''}${fmt$(gs.total)}`),
+        jobs.map(j => jobRow(j, stubsByJob)),
+        listTotalsLine(jobs, stubsByJob, 'Grand total (excl. holds)'));
+    })() : null,
   );
 }
 
@@ -1687,7 +1691,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v72';
+const APP_VERSION = 'v73';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
