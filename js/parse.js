@@ -445,30 +445,38 @@ export function parseCheck(text) {
   const payIdx = ls.findIndex(l => /pay\s+to\s+the\s+order\s+of/i.test(l));
   // Payer: the company block printed at the TOP of the check, before "pay to
   // the order of" — that's who the money is from, i.e. the job's company.
-  const boiler = /^(e-?check|cheque|check|no\.?\b|date|issued|void|memo|pay\b|amount|dollars?|authorized|signature)/i;
-  const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\d{5}(-\d{4})?$/i;
+  const boiler = /^(e-?check|cheque|check|no\.?\b|date|issued|void|memo|pay\b|amount|dollars?|authorized|signature|description|invoice)/i;
+  const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\d{5}(-\d{4})?/i;
   const banky = /\b(bank|banking|n\.?a\.?|fdic|routing|account|deluxe)\b|payable\s+through/i;
-  const topLines = ls.slice(0, payIdx > 0 ? payIdx : 6).filter(l =>
-    /[A-Za-z]{3}/.test(l)                              // not numbers / check no
-    && !boiler.test(l) && !addressy.test(l) && !banky.test(l)
-    && !parseDate(l) && !/\$\s*[\d,]+\.\d{2}/.test(l));
-  // Prefer a line that LOOKS like a company (LLC/Pictures/Media/…); OCR
-  // fragments ("mand H") otherwise sneak in. Fall back to any line with
-  // enough letters to be a real name.
-  const suffixy = /\b(llc|inc|ltd|corp|co|company|pictures?|productions?|media|studios?|films?|entertainment|network|group|partners)\b\.?/i;
-  p.employer = (topLines.find(l => suffixy.test(l))
-    || topLines.find(l => l.replace(/[^A-Za-z]/g, '').length >= 6)
-    || '').replace(/,.*$/, '').trim();
+  // Printed-check security boilerplate ("HOLD TO LIGHT…WATERMARK…") is never
+  // a company name.
+  const securityish = /watermark|security|heat\s|sensitive|hold\s+to\s+light|lock\b|signatures?\s+required|details\s+on\s+back|micro\s*print|void\b/i;
   if (payIdx >= 0) {
     const tail = ls[payIdx].replace(/.*order\s+of\s*:?\s*/i, '').trim();
     p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : (ls[payIdx + 1] || ''))
       .replace(/\s*\$\s*[\d,.]+.*$/, '').replace(/,.*$/, '').trim();
   }
-  // Amount: labeled, else the largest $x,xxx.xx on the page (the numeric
-  // amount box; smaller figures are dates/routing fragments).
+  // Payer: business checks print the clean company name wherever the
+  // remittance stub sits — search the WHOLE page for a company-suffix line
+  // (LLC/Pictures/Media/…) that isn't the payee, the bank, an address, or
+  // security boilerplate. Fall back to the block above "pay to the order of".
+  const sqz = (s) => (s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const payeeSq = sqz(p.payee);
+  const companyish = (l) =>
+    /[A-Za-z]{3}/.test(l)
+    && !boiler.test(l) && !addressy.test(l) && !banky.test(l) && !securityish.test(l)
+    && !parseDate(l) && !/[\d,]+\.\d{2}/.test(l)
+    && !(payeeSq && (sqz(l).includes(payeeSq) || payeeSq.includes(sqz(l))));
+  const suffixy = /\b(llc|inc|ltd|corp|co|company|pictures?|productions?|media|studios?|films?|entertainment|network|group|partners)\b\.?/i;
+  const topLines = ls.slice(0, payIdx > 0 ? payIdx : 6).filter(companyish);
+  p.employer = (ls.filter(companyish).find(l => suffixy.test(l))
+    || topLines.find(l => l.replace(/[^A-Za-z]/g, '').length >= 6)
+    || '').replace(/,.*$/, '').trim();
+  // Amount: labeled, else the largest money figure on the page — checks
+  // print it $-prefixed, asterisk-protected (******2,000.00), or bare.
   let amt = parseMoney(labeled(ls, /amount/i, isMoney));
   if (amt === null) {
-    const all = [...text.matchAll(/\$\s*([\d,]+\.\d{2})/g)]
+    const all = [...text.matchAll(/(?:\$|\*+|^|\s)([\d,]+\.\d{2})\b/gm)]
       .map(m => parseFloat(m[1].replace(/,/g, '')));
     if (all.length) amt = Math.max(...all);
   }
@@ -481,16 +489,42 @@ export function parseCheck(text) {
     const solo = ls.find(l => /^#?\d{3,6}$/.test(l.trim()));
     if (solo) p.check_no = solo.trim().replace(/^#/, '');
   }
-  p.check_date = parseDate(labeled(ls, /issued?|check\s+date|\bdate\b/i, isDate)) || allDates(text)[0] || '';
-  // Memo / invoice reference — often says what the check pays. The match
-  // must NOT cross a line break: an empty MEMO box would swallow whatever
-  // line OCR put next (the bank name, in the wild).
+  // Check date: the date printed NEXT TO the check number wins — the first
+  // date on the page is often an invoice date on the remittance stub.
+  let cdate = '';
+  if (p.check_no) {
+    const near = ls.find(l => l.includes(p.check_no) && allDates(l).length);
+    if (near) cdate = allDates(near)[0];
+  }
+  p.check_date = cdate
+    || parseDate(labeled(ls, /issued?|check\s+date/i, isDate))
+    || allDates(text)[0] || '';
+  // Memo / invoice references — often say what the check pays. The memo
+  // match must NOT cross a line break: an empty MEMO box would swallow
+  // whatever line OCR put next (the bank name, in the wild).
   const memoM = text.match(/memo[ \t:.,_-]*([^\n]*)/i);
   let memo = memoM ? memoM[1].trim() : '';
-  if (/\b(bank|banking|n\.?a\.?|fdic)\b/i.test(memo)) memo = '';
-  const inv = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*([A-Za-z0-9-]+)/i);
-  p.job_title = [memo ? `memo: ${memo}` : '', inv ? `Inv #${inv[1]}` : ''].filter(Boolean).join(' · ');
-  const gearish = /\b(eq|equip\w*|gear|rental|kit|box|digitech)\b/i.test(memo);
+  if (/\b(bank|banking|n\.?a\.?|fdic)\b/i.test(memo) || /^\d[\d\s/]*$/.test(memo)) memo = '';
+  // Joint payments list SEVERAL invoices on one line, interleaved with their
+  // dates ("INVOICE# 09/08/2026 2629 09/14/2026 2630") — strip the dates,
+  // then every remaining 3-6 digit number is an invoice.
+  let invoices = [];
+  const invLine = ls.find(l => /inv(oice)?s?\s*#?/i.test(l));
+  if (invLine) {
+    const stripped = invLine.replace(/\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/g, ' ')
+      .replace(/inv(oice)?s?\s*#?/ig, ' ');
+    invoices = [...stripped.matchAll(/\b(\d{3,6})\b/g)].map(m => m[1])
+      .filter(n => n !== p.check_no);
+  } else {
+    const one = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*(\d{3,6})\b/i);
+    if (one) invoices = [one[1]];
+  }
+  p.job_title = [memo ? `memo: ${memo}` : '',
+    invoices.length ? 'Inv ' + invoices.map(n => `#${n}`).join(', ') : '']
+    .filter(Boolean).join(' · ');
+  // Whole-check classification: checks are short documents, so equipment
+  // words anywhere (memo or remittance description) mean a gear payment.
+  const gearish = /\b(equip\w*|gear|rental|kit|box|digitech)\b/i.test(text) || /\beq\b/i.test(memo);
   p.earnings = [{ type: gearish ? 'Equipment rental (check)' : 'Check payment',
     hours: null, rate: null, amount: p.gross }];
   return p;

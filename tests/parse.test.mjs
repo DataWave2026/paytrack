@@ -578,3 +578,58 @@ AUTHORIZED SIGNATURE`;
   assert.equal(p.gross, 2500);
   assert.equal(p.check_no, '0817');
 });
+
+test('business check with remittance stub: joint payment of two invoices', () => {
+  // Modeled on a real City National production check: security boilerplate up
+  // top, asterisk-protected amount (no $), the clean company name only in the
+  // remittance section, TWO invoices interleaved with their dates, and the
+  // real check date sitting NEXT TO the check number.
+  const txt = `________________
+
+HOLD TO LIGHT TO VIEW THUE WATERMARK IN PAPER HEAT GENSITIVE RED LOCK DISAPPEARS WHEN HEATED
+Head Office Banking 310-555-0100
+400 North Roxbury Drive
+CITY NATIONAL BANK
+Beverly Hills, California 90210
+16-1606/1220
+BRIGHT FUTU
+REFUTURE
+100 SUNSET BLVD
+LOS ANGELES, CA 90028 310-555-0101
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+Two Thousand Dollars and 00/100
+EXAMPLE MEDIA CO 100 MAIN ST
+PASADENA, CA 91105
+MEMO
+84556
+09/23/2026
+*********2,000.00
+DOLLARS
+TWO SIGNATURES REQUIRED IF $10,000 OR MORE
+084556 12 2016066
+127784213''
+BRIGHT FUTURE, LLC
+20010210
+EXAMPLE MEDIA CO
+DATE
+INVOICE# 09/08/2026 2629 09/14/2026 2630
+DESCRIPTION
+JOB CO-12345-051 DIT EQUIPMENT JOB CO-12345-051 DIT EQUIPMENT
+09/23/2026 84556
+ALTHORIZED SIGNATURE
+84556
+PAYMENT
+1,000.00 1,000.00
+EP Security features. Details on back.`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.employer, 'BRIGHT FUTURE');            // remittance line, not boilerplate
+  assert.match(p.payee, /EXAMPLE MEDIA CO/);
+  assert.equal(p.gross, 2000);                          // asterisk-protected, no $
+  assert.equal(p.check_no, '84556');
+  assert.equal(p.check_date, '2026-09-23');             // date beside check no, not inv date
+  assert.equal(p.job_title, 'Inv #2629, #2630');        // BOTH invoices
+  assert.match(p.earnings[0].type, /Equipment/);        // DIT EQUIPMENT description
+  assert.equal(p.earnings[0].amount, 2000);
+});
