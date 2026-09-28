@@ -807,7 +807,7 @@ async function editJob(existing, prefill) {
     const rows = stubs.filter(s => s.gross !== null && s.gross !== undefined).map(s => {
       const gearPart = gearOnStub(s.earnings);
       const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
-      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}`,
+      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}${s.memo ? ' · ' + s.memo : ''}`,
         gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart),
         hours: s.hours, net: s.net, dsum, dedItems: s.deductions || [] };
     });
@@ -1272,6 +1272,8 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Employer / production co'), input('employer')),
       h('div', {}, h('label', {}, 'Payroll company'), input('payroll_employer', { placeholder: 'e.g. TakeOne Network Corp.' }))),
+    h('label', {}, 'Memo / invoice #s (from the check)'),
+    input('memo', { placeholder: 'e.g. Inv #2629, #2630' }),
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Paid to'), (() => {
         // Dropdown of the two known payees, auto-selected from the scan.
@@ -1559,7 +1561,7 @@ async function pickMatch(p, uploaded, ocrText) {
               vendor: p.vendor, project_name: p.project_name, employer: p.employer,
               payee: p.payee || '', classification: p.classification || '',
               payroll_employer: p.payroll_employer || '', paid_to: p.paid_to || '',
-              job_title: p.job_title || '',
+              job_title: p.job_title || '', memo: p.memo || '',
               // Synthetic split lines keep gear vs wages accounting right per job.
               earnings: gearOnly ? [{ type: 'Kit/box rental (split)', hours: null, rate: null, amount: portion }] : [],
               deductions: primary ? (p.deductions || []) : [],
@@ -1661,7 +1663,7 @@ async function pickMatch(p, uploaded, ocrText) {
           payee: p.payee || '', classification: p.classification || '',
           payroll_employer: p.payroll_employer || '',
           paid_to: p.paid_to || '',
-          job_title: p.job_title || '', earnings: p.earnings || [],
+          job_title: p.job_title || '', memo: p.memo || '', earnings: p.earnings || [],
           deductions: p.deductions || [], total_deductions: p.total_deductions,
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
@@ -2017,7 +2019,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v85';
+const APP_VERSION = 'v86';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

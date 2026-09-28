@@ -96,7 +96,7 @@ export function blankParse() {
     hourly_rates: [], hours: null, gross: null, net: null,
     check_no: '', check_date: '', day_count: null, earnings: [],
     payee: '', classification: '', job_title: '', payroll_employer: '',
-    deductions: [], total_deductions: null,
+    deductions: [], total_deductions: null, memo: '',
     paid_to: '',               // 'company' | 'me' | '' unknown
   };
 }
@@ -519,8 +519,9 @@ export function parseCheck(text) {
     const one = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*(\d{3,6})\b/i);
     if (one) invoices = [one[1]];
   }
-  p.job_title = [memo ? `memo: ${memo}` : '',
-    invoices.length ? 'Inv ' + invoices.map(n => `#${n}`).join(', ') : '']
+  // Memo gets its own field (a check has no job title) — invoice numbers
+  // and any memo text, shown under Company on the confirm screen.
+  p.memo = [invoices.length ? 'Inv ' + invoices.map(n => `#${n}`).join(', ') : '', memo]
     .filter(Boolean).join(' · ');
   // Whole-check classification: checks are short documents, so equipment
   // words anywhere (memo or remittance description) mean a gear payment.
