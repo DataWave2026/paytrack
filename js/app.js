@@ -1378,6 +1378,9 @@ async function pickMatch(p, uploaded, ocrText) {
   let markGearPaid = stubGear > 0;
   const gearNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
   const updateGearNote = () => {
+    // Splitting: the whole-check-vs-one-job comparison is meaningless — the
+    // per-job amounts + sum line in the split box carry the verification.
+    if (split) { gearNote.textContent = ''; return; }
     if (stubGear <= 0) return;
     if (chosen && chosen.gear_total) {
       const diff = stubGear - chosen.gear_total;
@@ -1469,15 +1472,16 @@ async function pickMatch(p, uploaded, ocrText) {
       prefillAmts();
       if (amt1 !== null && amt1Input.value === '') amt1Input.value = amt1;
       if (amt2 !== null && amt2Input.value === '') amt2Input.value = amt2;
-      label1.textContent = `Amount for "${chosen.project}" ($)`;
-      label2.textContent = chosen2 ? `Amount for "${chosen2.project}" ($)` : 'Amount for the second job ($)';
-      splitWrap.replaceChildren(
-        h('label', { class: 'mt' }, 'Second job on this check'),
+      label1.textContent = `Amount — ${chosen.project || 'first job'} ($)`;
+      label2.textContent = `Amount — ${chosen2 ? chosen2.project : 'second job'} ($)`;
+      label1.className = 'ellip'; label2.className = 'ellip';
+      splitWrap.replaceChildren(h('div', { class: 'splitbox' },
+        h('label', {}, 'Second job on this check'),
         list2,
         h('div', { class: 'row2' },
           h('div', {}, label1, amt1Input),
           h('div', {}, label2, amt2Input)),
-        sumNote);
+        sumNote));
       sumNoteUpd();
     } else splitWrap.replaceChildren();
     dayWrap.style.display = chosen === null && chipCount > 1 ? '' : 'none';
@@ -2016,7 +2020,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v82';
+const APP_VERSION = 'v83';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
