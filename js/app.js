@@ -1218,6 +1218,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
 }
 
 async function pickMatch(p, uploaded, ocrText) {
+  window.__pickMatchOpen = true;   // dev/testing hook marker
   const jobsList = await store.allJobs();
   const stubGear = gearOnStub(p.earnings);
   // A gear-only stub (kit/box rental with no wage lines) pays gear, not wages.
@@ -1232,6 +1233,35 @@ async function pickMatch(p, uploaded, ocrText) {
   // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
   // default to "create a new job" so a stale selection never sticks.
   let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
+
+  // One check can pay TWO jobs (two invoices, same company). If no single
+  // job's gear total matches but a PAIR of unpaid-gear jobs sums to this
+  // check, recognize the split and preselect it.
+  const checkTotal = gearOnly ? stubGear : (p.gross ?? stubGear ?? null);
+  let split = false, chosen2 = null, amt1 = null, amt2 = null, amtEdited = false;
+  if (stubGear > 0) {
+    const singleHit = jobsList.some(j => !j.deleted && j.gear_total && Math.abs(j.gear_total - stubGear) <= 1);
+    if (!singleHit) {
+      const gearJobs = jobsList.filter(j => !j.deleted && j.gear_total && j.gear_status !== 'paid' && j.gear_status !== 'na');
+      outer: for (let a = 0; a < gearJobs.length; a++) {
+        for (let b = a + 1; b < gearJobs.length; b++) {
+          if (Math.abs(gearJobs[a].gear_total + gearJobs[b].gear_total - stubGear) <= 1) {
+            split = true;
+            chosen = gearJobs[a]; chosen2 = gearJobs[b];
+            amt1 = gearJobs[a].gear_total; amt2 = gearJobs[b].gear_total;
+            amtEdited = true;
+            log('splitDetected', { a: gearJobs[a].project, b: gearJobs[b].project, total: stubGear });
+            break outer;
+          }
+        }
+      }
+    }
+  }
+  // Second-job choices: the match candidates plus any auto-detected pair job.
+  const cand2 = candidates.map(c => c.job);
+  for (const extra of [chosen, chosen2]) {
+    if (extra && !cand2.some(j => j.id === extra.id)) cand2.push(extra);
+  }
   let markPaid = !gearOnly;
   let markGearPaid = stubGear > 0;
   const gearNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
@@ -1271,19 +1301,73 @@ async function pickMatch(p, uploaded, ocrText) {
     dayBox, dayCounter);
 
   const list = h('div', {});
+  const list2 = h('div', {});
+  const amt1Input = h('input', { type: 'number', inputmode: 'decimal' });
+  const amt2Input = h('input', { type: 'number', inputmode: 'decimal' });
+  amt1Input.addEventListener('input', e => { amt1 = e.target.value === '' ? null : parseFloat(e.target.value); amtEdited = true; sumNoteUpd(); });
+  amt2Input.addEventListener('input', e => { amt2 = e.target.value === '' ? null : parseFloat(e.target.value); amtEdited = true; sumNoteUpd(); });
+  const sumNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
+  const sumNoteUpd = () => {
+    if (!split) return;
+    const sum = (amt1 || 0) + (amt2 || 0);
+    if (checkTotal) {
+      const ok = Math.abs(sum - checkTotal) <= 1;
+      sumNote.textContent = ok
+        ? `${fmt$(sum)} — matches the check total ✓`
+        : `${fmt$(sum)} of ${fmt$(checkTotal)} on the check (${fmt$(Math.abs(checkTotal - sum))} ${sum < checkTotal ? 'unassigned' : 'over'})`;
+      sumNote.style.color = ok ? 'var(--accent)' : 'var(--warn)';
+    } else sumNote.textContent = '';
+  };
+  const label1 = h('label', { class: 'mt' }, '');
+  const label2 = h('label', { class: 'mt' }, '');
+  const splitWrap = h('div', { class: 'mt' });
+  const prefillAmts = () => {
+    if (amtEdited || !split) return;
+    if (gearOnly) {
+      amt1 = chosen?.gear_total ?? (checkTotal ? Math.round(checkTotal / 2 * 100) / 100 : null);
+    } else {
+      amt1 = checkTotal ? Math.round(checkTotal / 2 * 100) / 100 : null;
+    }
+    amt2 = checkTotal && amt1 !== null ? Math.round((checkTotal - amt1) * 100) / 100 : null;
+    amt1Input.value = amt1 ?? ''; amt2Input.value = amt2 ?? '';
+  };
   const redraw = () => {
     list.replaceChildren(
       ...candidates.map((c, i) => h('div', {
         class: 'candidate' + (chosen?.id === c.job.id ? ' best' : ''),
-        onclick: () => { chosen = c.job; redraw(); },
+        onclick: () => { chosen = c.job; if (chosen2?.id === chosen.id) chosen2 = null; redraw(); },
       },
         h('span', { class: 'score' }, c.reasons.join(', ') || 'weak match'),
         h('div', { class: 'title' }, (chosen?.id === c.job.id ? '✓ ' : '') + (c.job.project || '(untitled)')),
         h('div', { class: 'sub muted small' }, fmtRange(c.job.start_date, c.job.end_date)))),
       h('div', {
         class: 'candidate' + (chosen === null ? ' best' : ''),
-        onclick: () => { chosen = null; redraw(); },
+        onclick: () => { chosen = null; split = false; redraw(); },
       }, h('div', { class: 'title' }, (chosen === null ? '✓ ' : '') + 'None of these — create a new job from this stub')));
+    // Split UI: second-job picker + per-job amounts.
+    if (split && chosen) {
+      list2.replaceChildren(
+        ...cand2.filter(j => j.id !== chosen.id).map(j => h('div', {
+          class: 'candidate' + (chosen2?.id === j.id ? ' best' : ''),
+          onclick: () => { chosen2 = j; redraw(); },
+        },
+          h('div', { class: 'title' }, (chosen2?.id === j.id ? '✓ ' : '') + (j.project || '(untitled)')),
+          h('div', { class: 'sub muted small' }, [fmtRange(j.start_date, j.end_date),
+            j.gear_total ? `gear ${fmt$(j.gear_total)}` : ''].filter(Boolean).join(' · ')))));
+      prefillAmts();
+      if (amt1 !== null && amt1Input.value === '') amt1Input.value = amt1;
+      if (amt2 !== null && amt2Input.value === '') amt2Input.value = amt2;
+      label1.textContent = `Amount for "${chosen.project}" ($)`;
+      label2.textContent = chosen2 ? `Amount for "${chosen2.project}" ($)` : 'Amount for the second job ($)';
+      splitWrap.replaceChildren(
+        h('label', { class: 'mt' }, 'Second job on this check'),
+        list2,
+        h('div', { class: 'row2' },
+          h('div', {}, label1, amt1Input),
+          h('div', {}, label2, amt2Input)),
+        sumNote);
+      sumNoteUpd();
+    } else splitWrap.replaceChildren();
     dayWrap.style.display = chosen === null && chipCount > 1 ? '' : 'none';
     updateGearNote();
   };
@@ -1292,6 +1376,12 @@ async function pickMatch(p, uploaded, ocrText) {
   viewEl.replaceChildren(h('div', { class: 'card' },
     h('h2', {}, candidates.length ? 'Which job is this stub for?' : 'No matching job found'),
     list,
+    h('label', { class: 'mt' },
+      h('input', {
+        type: 'checkbox', ...(split ? { checked: 'checked' } : {}), style: 'width:auto;margin-right:8px',
+        onchange: (e) => { split = e.target.checked; if (!split) chosen2 = null; redraw(); },
+      }), 'This check pays TWO jobs (split across two invoices)'),
+    splitWrap,
     dayWrap,
     h('label', { class: 'mt' },
       h('input', {
@@ -1307,6 +1397,70 @@ async function pickMatch(p, uploaded, ocrText) {
       gearNote) : null,
     h('button', {
       class: 'primary', onclick: async () => {
+        if (split) {
+          if (!chosen || !chosen2) return toast('Pick both jobs for the split.');
+          if (!(amt1 > 0) || !(amt2 > 0)) return toast('Enter the amount for each job.');
+          // Payee attribution — same rules as a single-job save.
+          const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
+          if (p.paid_to === 'company' && p.payee && !settings().companyName) saveSettings({ companyName: p.payee });
+          if (p.paid_to === 'me' && p.payee && !settings().personalName) saveSettings({ personalName: p.payee });
+          let via = '';
+          if (p.paid_to) via = p.paid_to;
+          else if (/loan\s*-?\s*out/i.test(p.classification || '')) via = 'company';
+          else if (p.payee) {
+            const comp = sq(settings().companyName);
+            via = comp && (sq(p.payee).includes(comp) || comp.includes(sq(p.payee))) ? 'company' : 'me';
+          }
+          const allStubs = await store.allStubs();
+          for (const [job, portion] of [[chosen, amt1], [chosen2, amt2]]) {
+            const primary = job === chosen;
+            job.job_status = 'confirmed';
+            if (gearOnly) {
+              if (markGearPaid) {
+                const short = job.gear_total && portion < job.gear_total - 1;
+                job.gear_status = short ? 'partial' : 'paid';
+                if (job.gear_total === null || job.gear_total === undefined) job.gear_total = portion;
+                if (via) job.gear_paid_via = via;
+                const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(portion)} split of check${p.check_no ? ' #' + p.check_no : ''})`;
+                if (!job.notes.includes(gline)) job.notes = job.notes ? `${job.notes}\n${gline}` : gline;
+              }
+              if (markPaid) { job.wages_status = 'paid'; if (via) job.paid_via = via; }
+            } else if (markPaid) {
+              job.wages_status = 'paid';
+              if (via) job.paid_via = via;
+              const line = `Paid ${p.check_date || ''}${p.check_no ? `, check #${p.check_no}` : ''} (${fmt$(portion)} split)`;
+              if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
+            }
+            // One record per (check, job) — a re-scan updates, never duplicates.
+            const existing = p.check_no && String(p.check_no).length >= 4
+              ? allStubs.find(st => st.check_no === p.check_no && st.matched_job_id === job.id) : null;
+            await store.putStub({
+              id: existing ? existing.id : store.uid(),
+              created_at: existing?.created_at,
+              drive_file_id: '', photo_name: '',
+              vendor: p.vendor, project_name: p.project_name, employer: p.employer,
+              payee: p.payee || '', classification: p.classification || '',
+              payroll_employer: p.payroll_employer || '', paid_to: p.paid_to || '',
+              job_title: p.job_title || '',
+              // Synthetic split lines keep gear vs wages accounting right per job.
+              earnings: gearOnly ? [{ type: 'Kit/box rental (split)', hours: null, rate: null, amount: portion }] : [],
+              deductions: primary ? (p.deductions || []) : [],
+              total_deductions: primary ? p.total_deductions : null,
+              period_start: p.period_start, period_end: p.period_end,
+              hourly_rates: p.hourly_rates || [], hours: primary ? p.hours : null,
+              gross: portion, net: primary ? p.net : null,
+              check_no: p.check_no, check_date: p.check_date,
+              matched_job_id: job.id,
+              ocr_text_excerpt: (ocrText || '').slice(0, 500),
+            });
+            await store.putJob(job);
+            if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+          }
+          log('stubSplitSaved', { check: p.check_no || '', jobs: [chosen.project, chosen2.project], amts: [amt1, amt2] });
+          toast(`Check split — ${fmt$(amt1)} to "${chosen.project}", ${fmt$(amt2)} to "${chosen2.project}" ✓`, 5500);
+          render('home');
+          return;
+        }
         let job = chosen;
         if (!job) {
           // Job was never logged (user error) but the payment came through:
@@ -1372,11 +1526,14 @@ async function pickMatch(p, uploaded, ocrText) {
           if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
         }
         await store.putJob(job);
-        // The same check scanned again UPDATES its existing record — a check
-        // number can only ever be recorded once.
-        const existingStub = p.check_no && String(p.check_no).length >= 4
-          ? (await store.allStubs()).find(s => s.check_no === p.check_no)
-          : null;
+        // The same check scanned again UPDATES its existing record — one
+        // record per (check, job), so a previously-split check keeps both
+        // halves and a re-scan lands on the right one.
+        const sameCheck = p.check_no && String(p.check_no).length >= 4
+          ? (await store.allStubs()).filter(s => s.check_no === p.check_no)
+          : [];
+        const existingStub = sameCheck.find(s => s.matched_job_id === job.id)
+          || (sameCheck.length === 1 ? sameCheck[0] : null);
         const stubRec = {
           id: existingStub ? existingStub.id : store.uid(),
           created_at: existingStub?.created_at,
@@ -1409,6 +1566,10 @@ async function pickMatch(p, uploaded, ocrText) {
   ));
   viewEl.scrollTop = 0;
 }
+
+// Dev hook: drive the match screen with a synthetic parsed stub from the
+// console (used for debugging the matcher without a real scan).
+window.__pickMatch = (p) => pickMatch(p, null, '');
 
 // ---------- review (calendar import) ----------
 async function review() {
@@ -1729,7 +1890,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v77';
+const APP_VERSION = 'v78';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -1761,7 +1922,9 @@ async function dedupeChecks() {
     const stubs = await store.allStubs();
     const byCheck = {};
     for (const s of stubs) {
-      if (s.check_no && String(s.check_no).length >= 4) (byCheck[s.check_no] ||= []).push(s);
+      // One record per (check, job) — a check SPLIT across two jobs keeps
+      // both halves; only same-check-same-job copies collapse.
+      if (s.check_no && String(s.check_no).length >= 4) (byCheck[`${s.check_no}|${s.matched_job_id || ''}`] ||= []).push(s);
     }
     let removed = 0;
     for (const group of Object.values(byCheck)) {
