@@ -84,15 +84,19 @@ function nameScore(stub, job) {
   return best;
 }
 
-// Returns [{job, score, reasons}] sorted best-first; only plausible ones.
+function scoreParts(stub, job) {
+  return {
+    o: overlapScore(stub, job), r: rateScore(stub, job),
+    n: nameScore(stub, job), ga: gearScore(stub, job),
+  };
+}
+
+// Returns [{job, score, reasons, parts}] sorted best-first; only plausible ones.
 export function matchStub(stub, jobs) {
   const scored = jobs
     .filter(j => !j.deleted)
     .map(job => {
-      const o = overlapScore(stub, job);
-      const r = rateScore(stub, job);
-      const n = nameScore(stub, job);
-      const ga = gearScore(stub, job);
+      const { o, r, n, ga } = scoreParts(stub, job);
       const reasons = [];
       if (o >= 50) reasons.push('dates overlap');
       else if (o > 0) reasons.push('dates close');
@@ -102,9 +106,23 @@ export function matchStub(stub, jobs) {
       else if (n > 0) reasons.push('name similar');
       if (ga >= 25) reasons.push('gear amount matches');
       else if (ga > 0) reasons.push('gear amount close');
-      return { job, score: o + r + n + ga, reasons };
+      return { job, score: o + r + n + ga, reasons, parts: { o, r, n, ga } };
     })
     .filter(c => c.score >= 20)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, 5);
+}
+
+// EVERY job scored with the component breakdown (overlap/rate/name/gear),
+// including sub-threshold ones — this is what the diagnostics log records,
+// so a "didn't find the job" report shows exactly why each job scored low.
+export function matchDebug(stub, jobs) {
+  return jobs
+    .filter(j => !j.deleted)
+    .map(job => {
+      const p = scoreParts(stub, job);
+      return { project: job.project, dates: `${job.start_date}..${job.end_date}`,
+        score: p.o + p.r + p.n + p.ga, ...p };
+    })
+    .sort((a, b) => b.score - a.score);
 }
