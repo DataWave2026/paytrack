@@ -1201,6 +1201,7 @@ async function runStubPipeline(file) {
     confirmStubForm(parsed, null, text);
   } catch (e) {
     log('scanFail', { msg: String(e.message).slice(0, 200) });
+    pushDiagnostics(true).catch(() => {});
     toast(/40[03]/.test(e.message)
       ? 'Google couldn\'t read that file (format or size) — the photo is still selected, tap "Scan & match" to try again, or use a JPEG/PNG.'
       : `Scan failed: ${e.message} — the photo is still selected, tap "Scan & match" to retry.`, 9000);
@@ -1950,13 +1951,7 @@ async function settingsView() {
             e.preventDefault();
             // Full snapshot: log + every job and payment record, saved as a
             // file that can be shared/dropped straight into a Claude session.
-            const report = {
-              version: APP_VERSION, ua: navigator.userAgent, time: new Date().toISOString(),
-              settings: settings(), log: dump(),
-              jobs: await store.allJobs({ includeDeleted: true }),
-              stubs: await store.allStubs(),
-            };
-            const blob = new Blob([JSON.stringify(report, null, 1)], { type: 'application/json' });
+            const blob = new Blob([JSON.stringify(await buildBugReport(), null, 1)], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = `paytrack-bug-report-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1990,6 +1985,8 @@ function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 applyTheme();
+// Stable per-device id — names this device's diagnostics file in Drive.
+if (!settings().deviceId) saveSettings({ deviceId: store.uid() });
 
 const EYE_OPEN = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/><line x1="3" y1="21" x2="21" y2="3"/></svg>';
@@ -2020,7 +2017,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v83';
+const APP_VERSION = 'v84';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2149,6 +2146,30 @@ async function backfillPaidVia() {
   } catch (e) { console.warn('backfill', e); }
 }
 
+async function buildBugReport() {
+  return {
+    version: APP_VERSION, ua: navigator.userAgent, time: new Date().toISOString(),
+    device: settings().deviceId || '', settings: settings(), log: dump(),
+    jobs: await store.allJobs({ includeDeleted: true }),
+    stubs: await store.allStubs(),
+  };
+}
+
+// Each device overwrites its own diagnostics file in the "PayTrack Scans"
+// Drive folder (30-min throttle; immediately after a scan failure) — remote
+// debugging without hand-exporting a report from every device.
+let lastDiagUp = 0;
+async function pushDiagnostics(force = false) {
+  if (!auth.isConnected() || settings().keepScans === false) return;
+  if (!force && Date.now() - lastDiagUp < 30 * 60000) return;
+  lastDiagUp = Date.now();
+  try {
+    await g.uploadDiagnostics(`diagnostics-${settings().deviceId || 'device'}.json`,
+      JSON.stringify(await buildBugReport()));
+    log('diagUp', { ok: true });
+  } catch (e) { log('diagUpErr', { msg: String(e.message).slice(0, 120) }); }
+}
+
 async function backgroundSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
   try {
@@ -2176,6 +2197,7 @@ async function backgroundSync() {
     }
   }
   log('sync', { ok: !errs.length, failed: errs });
+  pushDiagnostics().catch(() => {});
 }
 
 if ('serviceWorker' in navigator) {

@@ -447,14 +447,18 @@ export function parseCheck(text) {
   // the order of" — that's who the money is from, i.e. the job's company.
   const boiler = /^(e-?check|cheque|check|no\.?\b|date|issued|void|memo|pay\b|amount|dollars?|authorized|signature)/i;
   const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\d{5}(-\d{4})?$/i;
-  for (const l of ls.slice(0, payIdx > 0 ? payIdx : 6)) {
-    if (!/[A-Za-z]{3}/.test(l)) continue;              // numbers / check no
-    if (boiler.test(l) || addressy.test(l)) continue;
-    if (parseDate(l) || /\$\s*[\d,]+\.\d{2}/.test(l)) continue;
-    if (/bank|routing|account|deluxe|payable\s+through/i.test(l)) continue;
-    p.employer = l.replace(/,.*$/, '').trim();
-    break;
-  }
+  const banky = /\b(bank|banking|n\.?a\.?|fdic|routing|account|deluxe)\b|payable\s+through/i;
+  const topLines = ls.slice(0, payIdx > 0 ? payIdx : 6).filter(l =>
+    /[A-Za-z]{3}/.test(l)                              // not numbers / check no
+    && !boiler.test(l) && !addressy.test(l) && !banky.test(l)
+    && !parseDate(l) && !/\$\s*[\d,]+\.\d{2}/.test(l));
+  // Prefer a line that LOOKS like a company (LLC/Pictures/Media/…); OCR
+  // fragments ("mand H") otherwise sneak in. Fall back to any line with
+  // enough letters to be a real name.
+  const suffixy = /\b(llc|inc|ltd|corp|co|company|pictures?|productions?|media|studios?|films?|entertainment|network|group|partners)\b\.?/i;
+  p.employer = (topLines.find(l => suffixy.test(l))
+    || topLines.find(l => l.replace(/[^A-Za-z]/g, '').length >= 6)
+    || '').replace(/,.*$/, '').trim();
   if (payIdx >= 0) {
     const tail = ls[payIdx].replace(/.*order\s+of\s*:?\s*/i, '').trim();
     p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : (ls[payIdx + 1] || ''))
@@ -478,9 +482,12 @@ export function parseCheck(text) {
     if (solo) p.check_no = solo.trim().replace(/^#/, '');
   }
   p.check_date = parseDate(labeled(ls, /issued?|check\s+date|\bdate\b/i, isDate)) || allDates(text)[0] || '';
-  // Memo / invoice reference — often says what the check pays.
-  const memoM = text.match(/memo[:\s]+([^\n]+)/i);
-  const memo = memoM ? memoM[1].trim() : '';
+  // Memo / invoice reference — often says what the check pays. The match
+  // must NOT cross a line break: an empty MEMO box would swallow whatever
+  // line OCR put next (the bank name, in the wild).
+  const memoM = text.match(/memo[ \t:.,_-]*([^\n]*)/i);
+  let memo = memoM ? memoM[1].trim() : '';
+  if (/\b(bank|banking|n\.?a\.?|fdic)\b/i.test(memo)) memo = '';
   const inv = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*([A-Za-z0-9-]+)/i);
   p.job_title = [memo ? `memo: ${memo}` : '', inv ? `Inv #${inv[1]}` : ''].filter(Boolean).join(' · ');
   const gearish = /\b(eq|equip\w*|gear|rental|kit|box|digitech)\b/i.test(memo);

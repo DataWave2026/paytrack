@@ -52,17 +52,40 @@ function multipartBody(meta, file) {
 // user's OWN Drive ("PayTrack Scans" folder) so a misparsed template can be
 // examined later. Returns the photo's file id.
 let scansFolderId = null;
-export async function uploadScan(file, name, ocrText) {
-  if (!scansFolderId) {
-    const existing = await findByName('PayTrack Scans', 'application/vnd.google-apps.folder');
-    if (existing) scansFolderId = existing.id;
-    else {
-      const created = await call('https://www.googleapis.com/drive/v3/files?fields=id', {
-        method: 'POST', json: { name: 'PayTrack Scans', mimeType: 'application/vnd.google-apps.folder' },
-      });
-      scansFolderId = created.id;
-    }
+async function ensureScansFolder() {
+  if (scansFolderId) return scansFolderId;
+  const existing = await findByName('PayTrack Scans', 'application/vnd.google-apps.folder');
+  if (existing) scansFolderId = existing.id;
+  else {
+    const created = await call('https://www.googleapis.com/drive/v3/files?fields=id', {
+      method: 'POST', json: { name: 'PayTrack Scans', mimeType: 'application/vnd.google-apps.folder' },
+    });
+    scansFolderId = created.id;
   }
+  return scansFolderId;
+}
+
+// Per-device diagnostics file, overwritten in place — one sign-in to the
+// Drive folder reads every device's logs without exporting anything by hand.
+export async function uploadDiagnostics(name, jsonString) {
+  const folder = await ensureScansFolder();
+  const existing = await findByName(name, null, folder);
+  const blob = new Blob([jsonString], { type: 'application/json' });
+  if (existing) {
+    await call(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
+      method: 'PATCH', body: blob, headers: { 'Content-Type': 'application/json' },
+    });
+    return existing.id;
+  }
+  const { body, contentType } = multipartBody({ name, parents: [folder] }, blob);
+  const created = await call('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+    method: 'POST', body, headers: { 'Content-Type': contentType },
+  });
+  return created.id;
+}
+
+export async function uploadScan(file, name, ocrText) {
+  await ensureScansFolder();
   const { body, contentType } = multipartBody({ name, parents: [scansFolderId] }, file);
   const photo = await call(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
