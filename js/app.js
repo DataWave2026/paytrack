@@ -1101,6 +1101,35 @@ async function normalizeImage(file, maxDim = 2200, quality = 0.85) {
   }
 }
 
+// Layout capture: word-level text POSITIONS via Tesseract (loaded on demand
+// from CDN, runs entirely in the browser — no API, no cost). Drive's OCR
+// gives better text but flat; the layout json records template geometry.
+let tessPromise = null;
+function loadTesseract() {
+  if (!tessPromise) {
+    tessPromise = new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.onload = () => res(window.Tesseract);
+      s.onerror = () => { tessPromise = null; rej(new Error('layout library failed to load')); };
+      document.head.appendChild(s);
+    });
+  }
+  return tessPromise;
+}
+async function captureLayout(blob) {
+  const T = await loadTesseract();
+  const worker = await T.createWorker('eng');
+  try {
+    const { data } = await worker.recognize(blob);
+    const words = (data.words || []).map(w => ({
+      t: w.text, c: Math.round(w.confidence || 0),
+      x0: w.bbox?.x0, y0: w.bbox?.y0, x1: w.bbox?.x1, y1: w.bbox?.y1,
+    }));
+    return JSON.stringify({ v: 1, words });
+  } finally { await worker.terminate(); }
+}
+
 // The extracted text survives until the record is saved — a crash or sync
 // error mid-flow must never cost a re-photograph.
 function pendingScan() {
@@ -1151,6 +1180,16 @@ async function runStubPipeline(file) {
         parsed.drive_file_id = await g.uploadScan(img, nm, text);
         parsed.photo_name = nm;
         log('scanKept', { id: parsed.drive_file_id, name: nm });
+        // Word POSITIONS too (background — never delays the flow): a
+        // .layout.json beside the photo records where each word sits, so
+        // new templates can be learned from geometry, not just text order.
+        if (file.type !== 'application/pdf') {
+          captureLayout(img)
+            .then(json => g.uploadScan(new Blob([json], { type: 'application/json' }),
+              nm.replace(/\.jpg$/, '.layout.json')))
+            .then(() => log('layoutKept', { name: nm }))
+            .catch(e => log('layoutErr', { msg: String(e.message).slice(0, 150) }));
+        }
       } catch (e) { log('scanKeepErr', { msg: String(e.message).slice(0, 150) }); }
     }
     log('scan', {
@@ -1977,7 +2016,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v80';
+const APP_VERSION = 'v81';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
