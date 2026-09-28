@@ -4,7 +4,7 @@ import * as auth from './auth.js';
 import * as g from './google.js';
 import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
-import { matchStub } from './match.js';
+import { matchStub, matchDebug } from './match.js';
 import { log, dump, clearLog } from './log.js';
 
 window.addEventListener('error', (e) =>
@@ -1037,7 +1037,9 @@ async function stub() {
 
   const card = h('div', { class: 'card' },
     h('h2', {}, 'Scan a paystub'),
-    h('p', { class: 'muted' }, 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'),
+    h('p', { class: 'muted' }, settings().keepScans === false
+      ? 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'
+      : 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo and its text are kept in a private "PayTrack Scans" folder in YOUR Drive for troubleshooting (turn off in Setup). You confirm everything before it counts.'),
     cameraInput, libraryInput,
     h('div', { class: 'row2 mt' },
       h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => cameraInput.click() }, 'Take a photo'),
@@ -1140,6 +1142,17 @@ async function runStubPipeline(file) {
       localStorage.setItem('paytrack.pendingScan',
         JSON.stringify({ text, t: Date.now(), name: file.name || 'photo' }));
     } catch {}
+    // Troubleshooting archive (Setup toggle): photo + OCR text into the
+    // user's own Drive so misparsed templates can be examined later.
+    if (settings().keepScans) {
+      try {
+        setStage('Archiving photo to your Drive…');
+        const nm = `${new Date().toISOString().slice(0, 10)} ${(file.name || 'scan').replace(/\.\w+$/, '')}.jpg`;
+        parsed.drive_file_id = await g.uploadScan(img, nm, text);
+        parsed.photo_name = nm;
+        log('scanKept', { id: parsed.drive_file_id, name: nm });
+      } catch (e) { log('scanKeepErr', { msg: String(e.message).slice(0, 150) }); }
+    }
     log('scan', {
       inBytes: file.size, ocrChars: (text || '').length, vendor: parsed.vendor,
       got: ['project_name', 'employer', 'payee', 'period_start', 'gross', 'check_no', 'day_count', 'paid_to']
@@ -1277,9 +1290,18 @@ async function pickMatch(p, uploaded, ocrText) {
     && !(p.hourly_rates || []).length
     && !(p.earnings || []).some(e => /straight|overtime|\bot\b|meal|holiday|penalt/i.test(e.type || ''));
   const candidates = matchStub({ ...p, gear_amount: stubGear }, jobsList);
+  // Everything the matcher saw and every job's component scores (o=dates,
+  // r=rate, n=name, ga=gear amount) — a "didn't find the job" report is
+  // diagnosable from the log alone.
   log('match', {
-    stub: p.project_name || p.check_no || '?', gearOnly,
-    top: candidates.slice(0, 3).map(c => ({ p: c.job.project, s: c.score, r: c.reasons.join('+') })),
+    parsed: {
+      vendor: p.vendor, project: p.project_name, employer: p.employer,
+      payee: p.payee, period: `${p.period_start || '?'}..${p.period_end || '?'}`,
+      gross: p.gross, gear: stubGear, check: p.check_no,
+      rates: (p.hourly_rates || []).slice(0, 6),
+    },
+    gearOnly,
+    scores: matchDebug({ ...p, gear_amount: stubGear }, jobsList).slice(0, 8),
   });
   // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
   // default to "create a new job" so a stale selection never sticks.
@@ -1489,7 +1511,7 @@ async function pickMatch(p, uploaded, ocrText) {
             await store.putStub({
               id: existing ? existing.id : store.uid(),
               created_at: existing?.created_at,
-              drive_file_id: '', photo_name: '',
+              drive_file_id: p.drive_file_id || '', photo_name: p.photo_name || '',
               vendor: p.vendor, project_name: p.project_name, employer: p.employer,
               payee: p.payee || '', classification: p.classification || '',
               payroll_employer: p.payroll_employer || '', paid_to: p.paid_to || '',
@@ -1503,7 +1525,7 @@ async function pickMatch(p, uploaded, ocrText) {
               gross: portion, net: primary ? p.net : null,
               check_no: p.check_no, check_date: p.check_date,
               matched_job_id: job.id,
-              ocr_text_excerpt: (ocrText || '').slice(0, 500),
+              ocr_text_excerpt: (ocrText || '').slice(0, 2000),
             });
             await store.putJob(job);
             if (auth.isConnected()) sync.pushJob(job).catch(() => {});
@@ -1590,7 +1612,7 @@ async function pickMatch(p, uploaded, ocrText) {
         const stubRec = {
           id: existingStub ? existingStub.id : store.uid(),
           created_at: existingStub?.created_at,
-          drive_file_id: '', photo_name: '',
+          drive_file_id: p.drive_file_id || '', photo_name: p.photo_name || '',
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
           payroll_employer: p.payroll_employer || '',
@@ -1601,7 +1623,7 @@ async function pickMatch(p, uploaded, ocrText) {
           hourly_rates: p.hourly_rates || [], hours: p.hours,
           gross: p.gross, net: p.net, check_no: p.check_no, check_date: p.check_date,
           matched_job_id: job.id,
-          ocr_text_excerpt: (ocrText || '').slice(0, 500),
+          ocr_text_excerpt: (ocrText || '').slice(0, 2000),
         };
         log('stubSaved', {
           check: p.check_no || '', job: job.project, newJob: !chosen,
@@ -1835,7 +1857,12 @@ async function settingsView() {
       h('input', {
         value: s.personalName, placeholder: 'auto-learned from personal stubs',
         onchange: (e) => saveSettings({ personalName: e.target.value.trim() }),
-      })),
+      }),
+      h('label', {}, 'Keep scan photos for troubleshooting'),
+      segmented('keepscans', s.keepScans === false ? 'off' : 'on',
+        [['on', 'On (recommended for now)'], ['off', 'Off']],
+        v => saveSettings({ keepScans: v === 'on' })),
+      h('p', { class: 'muted small' }, 'On: each scanned photo and its extracted text is saved to a private "PayTrack Scans" folder in YOUR Google Drive, so a misread stub can be examined later and the parser taught its template. Off: photos are never stored anywhere.')),
     h('div', { class: 'card' },
       h('h2', {}, 'Alerts'),
       h('div', { class: 'row2' },
@@ -1950,7 +1977,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v79';
+const APP_VERSION = 'v80';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

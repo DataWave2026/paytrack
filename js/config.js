@@ -11,6 +11,7 @@ const DEFAULTS = {
   sheetId: '',               // "PayTrack DB" spreadsheet
   theme: '',                 // '' auto | 'dark' | 'light'
   hideMoney: false,          // privacy eye: mask all dollar amounts
+  keepScans: true,           // archive scan photos + OCR text in Drive (troubleshooting)
   sidebarHidden: false,      // collapse the nav sidebar (handy on phones)
   companyName: '',           // user's loan-out company, for payee attribution
   personalName: '',          // user's own name as it appears on stubs

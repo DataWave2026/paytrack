@@ -48,6 +48,36 @@ function multipartBody(meta, file) {
   };
 }
 
+// Troubleshooting archive: keep the scanned photo + its OCR text in the
+// user's OWN Drive ("PayTrack Scans" folder) so a misparsed template can be
+// examined later. Returns the photo's file id.
+let scansFolderId = null;
+export async function uploadScan(file, name, ocrText) {
+  if (!scansFolderId) {
+    const existing = await findByName('PayTrack Scans', 'application/vnd.google-apps.folder');
+    if (existing) scansFolderId = existing.id;
+    else {
+      const created = await call('https://www.googleapis.com/drive/v3/files?fields=id', {
+        method: 'POST', json: { name: 'PayTrack Scans', mimeType: 'application/vnd.google-apps.folder' },
+      });
+      scansFolderId = created.id;
+    }
+  }
+  const { body, contentType } = multipartBody({ name, parents: [scansFolderId] }, file);
+  const photo = await call(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+      method: 'POST', body, headers: { 'Content-Type': contentType },
+    });
+  if (ocrText) {
+    const txt = multipartBody({ name: name.replace(/\.\w+$/, '') + '.ocr.txt', parents: [scansFolderId] },
+      new Blob([ocrText], { type: 'text/plain' }));
+    await call('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+      method: 'POST', body: txt.body, headers: { 'Content-Type': txt.contentType },
+    }).catch(() => {});
+  }
+  return photo.id;
+}
+
 // Drive's built-in OCR: upload the image converting it to a Google Doc,
 // export the doc as plain text, then delete the temporary doc.
 export async function ocrImage(file) {
