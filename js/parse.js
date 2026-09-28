@@ -509,15 +509,24 @@ export function parseCheck(text) {
   // dates ("INVOICE# 09/08/2026 2629 09/14/2026 2630") — strip the dates,
   // then every remaining 3-6 digit number is an invoice.
   let invoices = [];
-  const invLine = ls.find(l => /inv(oice)?s?\s*#?/i.test(l));
-  if (invLine) {
-    const stripped = invLine.replace(/\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/g, ' ')
+  const invIdx = ls.findIndex(l => /\binv(oice)?s?\b\s*#?/i.test(l));
+  if (invIdx >= 0) {
+    // OCR splits table cells run-to-run: the numbers can sit ON the label
+    // line or on the following lines — read the label line plus the next
+    // two as one zone. Dates and money figures are stripped first so
+    // neither invoice dates nor amounts masquerade as invoice numbers.
+    const zoneLines = [ls[invIdx]];
+    for (let k = invIdx + 1; k < Math.min(ls.length, invIdx + 3); k++) {
+      if (/^(description|payment|date|dollars?|memo|amount)\b/i.test(ls[k])) break;
+      zoneLines.push(ls[k]);
+    }
+    const stripped = zoneLines.join(' ')
+      .replace(/\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/g, ' ')   // dates
+      .replace(/[\d,]*\.\d{2}\b/g, ' ')                   // money
+      .replace(/[A-Za-z]+-[\d-]+/g, ' ')                  // job codes (CO-12345-051)
       .replace(/inv(oice)?s?\s*#?/ig, ' ');
-    invoices = [...stripped.matchAll(/\b(\d{3,6})\b/g)].map(m => m[1])
+    invoices = [...new Set([...stripped.matchAll(/\b(\d{3,6})\b/g)].map(m => m[1]))]
       .filter(n => n !== p.check_no);
-  } else {
-    const one = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*(\d{3,6})\b/i);
-    if (one) invoices = [one[1]];
   }
   // Memo gets its own field (a check has no job title) — invoice numbers
   // and any memo text, shown under Company on the confirm screen.
