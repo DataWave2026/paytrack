@@ -1049,7 +1049,24 @@ async function stub() {
         class: 'primary', onclick: () => runStubPipeline(stubFile),
       }, connected ? 'Scan & match' : 'Scan (connect Google in Setup first)') : null,
       h('button', { class: 'secondary', onclick: () => confirmStubForm(blankParse(), null, null) },
-        'Enter a stub manually instead')),
+        'Enter a stub manually instead'),
+      (() => {
+        // A scan that never finished saving can be picked back up — no
+        // re-photographing after an error.
+        const pend = pendingScan();
+        if (!pend) return null;
+        const when = new Date(pend.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        return h('div', { class: 'mt' },
+          h('button', {
+            class: 'secondary', style: 'margin-top:0',
+            onclick: () => confirmStubForm(parseStub(pend.text || ''), null, pend.text),
+          }, `Resume last scan (${when})`),
+          ' ',
+          h('a', {
+            href: '#', class: 'muted small',
+            onclick: (e) => { e.preventDefault(); clearPendingScan(); render('stub'); },
+          }, 'discard'));
+      })()),
   );
   card.addEventListener('dragover', (e) => { e.preventDefault(); card.style.borderColor = 'var(--accent)'; });
   card.addEventListener('dragleave', () => { card.style.borderColor = ''; });
@@ -1082,14 +1099,47 @@ async function normalizeImage(file, maxDim = 2200, quality = 0.85) {
   }
 }
 
+// The extracted text survives until the record is saved — a crash or sync
+// error mid-flow must never cost a re-photograph.
+function pendingScan() {
+  try {
+    const p = JSON.parse(localStorage.getItem('paytrack.pendingScan') || 'null');
+    return p && Date.now() - p.t < 48 * 3600000 ? p : null;
+  } catch { return null; }
+}
+function clearPendingScan() { try { localStorage.removeItem('paytrack.pendingScan'); } catch {} }
+
 async function runStubPipeline(file) {
   if (!auth.hasCredentials()) { toast('Connect Google in Setup first.'); return; }
-  const status = h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), ' Reading stub…');
-  viewEl.replaceChildren(status);
+  const stage = h('span', {}, ' Starting…');
+  viewEl.replaceChildren(h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), stage));
+  const setStage = (t) => { stage.textContent = ' ' + t; };
   try {
+    // Refresh the token NOW, while we're still inside the user's tap —
+    // Google's consent popup can only open from a gesture (esp. iPhone PWA),
+    // so a mid-pipeline expiry used to kill the whole scan.
+    setStage('Checking Google connection…');
+    await auth.token();
+    setStage('Preparing photo…');
     const img = file.type === 'application/pdf' ? file : await normalizeImage(file);
-    const text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
+    setStage('Reading with Google OCR…');
+    let text;
+    try {
+      text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
+    } catch (e) {
+      if (/40[013]/.test(e.message) && file.type !== 'application/pdf') {
+        // Oversized/odd photos are the usual cause — shrink harder, once.
+        log('scanRetry', { msg: String(e.message).slice(0, 150) });
+        setStage('Retrying with a smaller image…');
+        text = await g.ocrImage(await normalizeImage(file, 1600, 0.55));
+      } else throw e;
+    }
+    setStage('Extracting fields…');
     const parsed = parseStub(text || '');
+    try {
+      localStorage.setItem('paytrack.pendingScan',
+        JSON.stringify({ text, t: Date.now(), name: file.name || 'photo' }));
+    } catch {}
     log('scan', {
       inBytes: file.size, ocrChars: (text || '').length, vendor: parsed.vendor,
       got: ['project_name', 'employer', 'payee', 'period_start', 'gross', 'check_no', 'day_count', 'paid_to']
@@ -1098,9 +1148,10 @@ async function runStubPipeline(file) {
     });
     confirmStubForm(parsed, null, text);
   } catch (e) {
-    toast(/400/.test(e.message)
-      ? 'Google couldn\'t read that file (format or size). Take the photo with the in-app camera, or use a JPEG/PNG.'
-      : e.message, 7000);
+    log('scanFail', { msg: String(e.message).slice(0, 200) });
+    toast(/40[03]/.test(e.message)
+      ? 'Google couldn\'t read that file (format or size) — the photo is still selected, tap "Scan & match" to try again, or use a JPEG/PNG.'
+      : `Scan failed: ${e.message} — the photo is still selected, tap "Scan & match" to retry.`, 9000);
     render('stub');
   }
 }
@@ -1397,6 +1448,7 @@ async function pickMatch(p, uploaded, ocrText) {
       gearNote) : null,
     h('button', {
       class: 'primary', onclick: async () => {
+        try {
         if (split) {
           if (!chosen || !chosen2) return toast('Pick both jobs for the split.');
           if (!(amt1 > 0) || !(amt2 > 0)) return toast('Enter the amount for each job.');
@@ -1457,6 +1509,7 @@ async function pickMatch(p, uploaded, ocrText) {
             if (auth.isConnected()) sync.pushJob(job).catch(() => {});
           }
           log('stubSplitSaved', { check: p.check_no || '', jobs: [chosen.project, chosen2.project], amts: [amt1, amt2] });
+          clearPendingScan();
           toast(`Check split — ${fmt$(amt1)} to "${chosen.project}", ${fmt$(amt2)} to "${chosen2.project}" ✓`, 5500);
           render('home');
           return;
@@ -1556,10 +1609,17 @@ async function pickMatch(p, uploaded, ocrText) {
         });
         await store.putStub(stubRec);
         if (auth.isConnected()) sync.pushJob(job).catch(e => toast('Sync: ' + e.message, 5000));
+        clearPendingScan();
         toast(existingStub
           ? `Check #${p.check_no} was already on file — record updated, not duplicated.`
           : (markPaid ? `Stub filed — ${job.project} wages marked paid ✓` : 'Stub filed.'), 4500);
         render('home');
+        } catch (e) {
+          // Stay on this screen with everything the user picked intact — and
+          // the scan itself survives in "Resume last scan" regardless.
+          log('saveFail', { msg: String(e.message).slice(0, 200) });
+          toast(`Save hit an error (${e.message}). Nothing was lost — fix the connection or try again.`, 9000);
+        }
       },
     }, 'Save'),
     h('button', { class: 'secondary', onclick: () => confirmStubForm(p, uploaded, ocrText) }, '← Back'),
@@ -1890,7 +1950,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v78';
+const APP_VERSION = 'v79';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

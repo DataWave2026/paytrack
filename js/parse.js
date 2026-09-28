@@ -427,10 +427,63 @@ const VENDORS = [
   { re: /media\s+services/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Media Services' }, t) },
 ];
 
+// ---- Printed / e-checks (Deluxe eChecks etc.) ----
+// A payment document, not an itemized stub: "PAY TO THE ORDER OF", one
+// amount, a check number, a memo. Whole-check classification comes from the
+// memo (equipment words = gear payment).
+function looksLikeCheck(t) {
+  return /pay\s+to\s+the\s+order\s+of/i.test(t)
+    || (/void\s+after\s+\d+\s+days/i.test(t) && /\$?\s*[\d,]+\.\d{2}/.test(t))
+    || (/\be-?check\b/i.test(t) && /memo|amount/i.test(t));
+}
+
+export function parseCheck(text) {
+  const p = blankParse();
+  p.vendor = 'check';
+  const ls = lines(text);
+  // Payee: tail of the "pay to the order of" line, else the next line.
+  const payIdx = ls.findIndex(l => /pay\s+to\s+the\s+order\s+of/i.test(l));
+  if (payIdx >= 0) {
+    const tail = ls[payIdx].replace(/.*order\s+of\s*:?\s*/i, '').trim();
+    p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : (ls[payIdx + 1] || ''))
+      .replace(/\s*\$\s*[\d,.]+.*$/, '').replace(/,.*$/, '').trim();
+  }
+  // Amount: labeled, else the largest $x,xxx.xx on the page (the numeric
+  // amount box; smaller figures are dates/routing fragments).
+  let amt = parseMoney(labeled(ls, /amount/i, isMoney));
+  if (amt === null) {
+    const all = [...text.matchAll(/\$\s*([\d,]+\.\d{2})/g)]
+      .map(m => parseFloat(m[1].replace(/,/g, '')));
+    if (all.length) amt = Math.max(...all);
+  }
+  p.gross = amt; p.net = amt;
+  // Check number: labeled, else a standalone 3-6 digit line (corner number).
+  const num = text.match(/(?:check|cheque)\s*(?:no\.?|number|#)?\s*[:#]?\s*(\d{3,10})\b/i)
+    || text.match(/\bno\.?\s*[:#]?\s*(\d{3,10})\b/i);
+  if (num) p.check_no = num[1];
+  if (!p.check_no) {
+    const solo = ls.find(l => /^#?\d{3,6}$/.test(l.trim()));
+    if (solo) p.check_no = solo.trim().replace(/^#/, '');
+  }
+  p.check_date = parseDate(labeled(ls, /issued?|check\s+date|\bdate\b/i, isDate)) || allDates(text)[0] || '';
+  // Memo / invoice reference — often says what the check pays.
+  const memoM = text.match(/memo[:\s]+([^\n]+)/i);
+  const memo = memoM ? memoM[1].trim() : '';
+  const inv = text.match(/inv(?:oice)?\s*#?\s*[:#]?\s*([A-Za-z0-9-]+)/i);
+  p.job_title = [memo ? `memo: ${memo}` : '', inv ? `Inv #${inv[1]}` : ''].filter(Boolean).join(' · ');
+  const gearish = /\b(eq|equip\w*|gear|rental|kit|box|digitech)\b/i.test(memo);
+  p.earnings = [{ type: gearish ? 'Equipment rental (check)' : 'Check payment',
+    hours: null, rate: null, amount: p.gross }];
+  return p;
+}
+
 export function parseStub(text) {
   for (const v of VENDORS) {
     if (v.re.test(text)) return v.fn(text);
   }
+  // A bare check has no earnings table — a stub WITH an attached check
+  // portion still parses as a full stub.
+  if (looksLikeCheck(text) && !EARN_TYPES.test(text)) return parseCheck(text);
   return parseGenericInto(blankParse(), text);
 }
 
