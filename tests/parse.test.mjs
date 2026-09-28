@@ -558,3 +558,23 @@ test('a full stub with an attached check portion still parses as a stub', () => 
   const p = parseStub(withCheck);
   assert.notEqual(p.vendor, 'check');
 });
+
+test('bank name and OCR fragments never become employer or memo', () => {
+  // Modeled on a City National production check whose MEMO box OCR'd empty,
+  // with the bank name on the following line and a garbled fragment up top.
+  const txt = `CITY NATIONAL BANK
+mand H
+Example Pictures LLC
+PAY TO THE ORDER OF 3038 Digital Media $2,500.00
+0817
+09/20/2026
+MEMO
+CITY NATIONAL BANK
+AUTHORIZED SIGNATURE`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.employer, 'Example Pictures LLC');   // not the bank, not "mand H"
+  assert.ok(!/CITY NATIONAL/i.test(p.job_title), `job_title was ${p.job_title}`);
+  assert.equal(p.gross, 2500);
+  assert.equal(p.check_no, '0817');
+});
