@@ -528,6 +528,8 @@ AUTHORIZED SIGNATURE`;
   const p = parseStub(txt);
   assert.equal(p.vendor, 'check');
   assert.equal(p.gross, 1900);
+  // The payer company printed at the top of the check is the job's company.
+  assert.equal(p.employer, 'Streamline Media LLC');
   assert.equal(p.check_no, '0520');
   assert.equal(p.check_date, '2026-09-04');
   assert.match(p.payee, /Example Media Co/);

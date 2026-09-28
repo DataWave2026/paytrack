@@ -97,3 +97,27 @@ test('deleted jobs are never candidates', () => {
     period_end: '2026-08-22', hourly_rates: [81.82] }, withDeleted);
   assert.ok(m.every(c => c.job.id !== 'd'));
 });
+
+test('a bare check matches by company + date window + gear amount', () => {
+  const withGear = [...jobs, { id: 'chk', project: 'Night Shoot', company: 'Streamline Media LLC',
+    start_date: '2026-08-25', end_date: '2026-08-26', gear_total: 1000,
+    gear_status: 'unpaid', wages_status: 'paid' }];
+  // A check has NO work period — only an issue date, the payer company at
+  // the top, and an amount.
+  const stub = { project_name: '', employer: 'Streamline Media LLC', job_title: 'memo: EQ rental',
+    period_start: '', period_end: '', check_date: '2026-09-20',
+    hourly_rates: [], gear_amount: 1000 };
+  const m = matchStub(stub, withGear);
+  assert.equal(m[0].job.id, 'chk');
+  assert.ok(m[0].score >= 70, `score was ${m[0].score} (needs >= 70 to auto-preselect)`);
+});
+
+test('a check far outside payment terms does not date-match', () => {
+  const withGear = [{ id: 'old', project: 'Old Show', company: 'Streamline Media LLC',
+    start_date: '2026-01-05', end_date: '2026-01-06', gear_total: 500,
+    gear_status: 'paid', wages_status: 'paid' }];
+  const stub = { project_name: '', employer: 'Other Co', job_title: '',
+    period_start: '', check_date: '2026-09-20', hourly_rates: [], gear_amount: 999 };
+  const m = matchStub(stub, withGear);
+  assert.ok(m.length === 0 || m[0].score < 30);
+});
