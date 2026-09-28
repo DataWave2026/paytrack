@@ -201,6 +201,15 @@ a { color: var(--accent); }
 .candidate { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 8px; cursor: pointer; overflow-wrap: break-word; }
 .candidate.best { border-color: var(--accent); }
 .candidate .score { float: right; color: var(--muted); font-size: .75rem; }
+/* Phones: the reason badge gets its own line so titles never wrap around it.
+   (Must live AFTER the base rule — equal specificity, source order wins.) */
+@media (max-width: 480px) {
+  .candidate .score { float: none; display: block; margin-bottom: 3px; }
+}
+/* Split-check section: grouped in its own box, ellipsized amount labels */
+.splitbox { border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px 12px; margin-top: 8px; }
+.splitbox > label:first-child { margin-top: 8px; }
+label.ellip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 100%; }
 
 .stub-preview { max-width: 100%; border-radius: 10px; margin-top: 10px; }
 
