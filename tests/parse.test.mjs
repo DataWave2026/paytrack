@@ -649,3 +649,42 @@ VOID AFTER 90 DAYS`;
   assert.equal(p.vendor, 'check');
   assert.equal(p.memo, 'Inv #2629, #2630');
 });
+
+test('check photographed on a keyboard still parses (junk lines, fused digits)', () => {
+  // Real-world worst case: keyboard keys OCR'd as lines, company name fused
+  // with an account number, MEMO interleaved before the payee, invoice
+  // numbers after the DESCRIPTION header.
+  const txt = `option
+command
+Z
+M
+100 SUNSET BLVD LOS ANGELES, CA 90028
+BRIGHT FUTURE1163965430
+PAY TO THE ORDER OF
+MEMO
+EXAMPLE MEDIA CO
+shift
+control
+84556
+09/23/2026
+$*********2,000.00
+TWO SIGNATURES REQUIRED IF $10,000 OR MORE
+BRIGHT FUTURE, LLC 20010210
+EXAMPLE MEDIA CO
+DATE
+INVOICE#
+DESCRIPTION
+09/08/2026 2629 09/14/2026 2630
+JOB CO-12345-051 DIT EQUIPMENT
+09/23/2026 84556
+PAYMENT
+1,000.00 1,000.00`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.employer, 'BRIGHT FUTURE');
+  assert.match(p.payee, /EXAMPLE MEDIA CO/);
+  assert.equal(p.gross, 2000);
+  assert.equal(p.check_no, '84556');
+  assert.equal(p.check_date, '2026-09-23');
+  assert.equal(p.memo, 'Inv #2629, #2630');
+});

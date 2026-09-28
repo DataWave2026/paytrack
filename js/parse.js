@@ -440,20 +440,31 @@ function looksLikeCheck(t) {
 export function parseCheck(text) {
   const p = blankParse();
   p.vendor = 'check';
-  const ls = lines(text);
-  // Payee: tail of the "pay to the order of" line, else the next line.
+  // Junk pre-filter: photos taken over a keyboard OCR the KEYS as lines
+  // ("command", "option", stray letters) — drop keyboard words and 1-2
+  // character fragments before any field logic runs.
+  const junky = /^(option|command|control|ctrl|shift|alt|return|enter|tab|caps\s*lock|fn|delete|del|esc|escape|home|end)(\s+[A-Za-z])?$/i;
+  const ls = lines(text).filter(l => !junky.test(l) && l.replace(/[^A-Za-z0-9$*]/g, '').length > 2);
   const payIdx = ls.findIndex(l => /pay\s+to\s+the\s+order\s+of/i.test(l));
-  // Payer: the company block printed at the TOP of the check, before "pay to
-  // the order of" — that's who the money is from, i.e. the job's company.
   const boiler = /^(e-?check|cheque|check|no\.?\b|date|issued|void|memo|pay\b|amount|dollars?|authorized|signature|description|invoice)/i;
-  const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\d{5}(-\d{4})?/i;
+  // Address lines: street words, a state+zip pair, or a phone number —
+  // a bare digit-run (an account number fused onto a company line) is NOT
+  // an address.
+  const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\b[A-Z]{2}\s+\d{5}(-\d{4})?\b|\d{3}[-.\s]\d{3}[-.\s]\d{4}/i;
   const banky = /\b(bank|banking|n\.?a\.?|fdic|routing|account|deluxe)\b|payable\s+through/i;
   // Printed-check security boilerplate ("HOLD TO LIGHT…WATERMARK…") is never
   // a company name.
-  const securityish = /watermark|security|heat\s|sensitive|hold\s+to\s+light|lock\b|signatures?\s+required|details\s+on\s+back|micro\s*print|void\b/i;
+  const securityish = /waterm[au]r|security|heat\s|sensitive|hold\s+to\s+light|to\s+light\s+to|lock\b|signatures?\s+required|details?\s+on\s+back|micro\s*print|void\b|when\s+(heated|wated)/i;
   if (payIdx >= 0) {
     const tail = ls[payIdx].replace(/.*order\s+of\s*:?\s*/i, '').trim();
-    p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : (ls[payIdx + 1] || ''))
+    // The payee is the next REAL line — skip label lines ("MEMO") that OCR
+    // interleaves between the label and the name.
+    let next = '';
+    for (let k = payIdx + 1; k < Math.min(ls.length, payIdx + 4); k++) {
+      if (boiler.test(ls[k])) continue;
+      next = ls[k]; break;
+    }
+    p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : next)
       .replace(/\s*\$\s*[\d,.]+.*$/, '').replace(/,.*$/, '').trim();
   }
   // Payer: business checks print the clean company name wherever the
@@ -471,7 +482,9 @@ export function parseCheck(text) {
   const topLines = ls.slice(0, payIdx > 0 ? payIdx : 6).filter(companyish);
   p.employer = (ls.filter(companyish).find(l => suffixy.test(l))
     || topLines.find(l => l.replace(/[^A-Za-z]/g, '').length >= 6)
-    || '').replace(/,.*$/, '').trim();
+    || '').replace(/,.*$/, '')
+    // Fused account digits ("GIFTED YOUTH1163965430") are not part of a name.
+    .replace(/(\D)\d{6,}.*$/, '$1').trim();
   // Amount: labeled, else the largest money figure on the page — checks
   // print it $-prefixed, asterisk-protected (******2,000.00), or bare.
   let amt = parseMoney(labeled(ls, /amount/i, isMoney));
@@ -515,9 +528,12 @@ export function parseCheck(text) {
     // line or on the following lines — read the label line plus the next
     // two as one zone. Dates and money figures are stripped first so
     // neither invoice dates nor amounts masquerade as invoice numbers.
+    // The numbers can trail SEVERAL lines below the label (OCR emits the
+    // whole remittance table column by column) — scan up to 6 lines, SKIP
+    // section headers rather than stopping at them.
     const zoneLines = [ls[invIdx]];
-    for (let k = invIdx + 1; k < Math.min(ls.length, invIdx + 3); k++) {
-      if (/^(description|payment|date|dollars?|memo|amount)\b/i.test(ls[k])) break;
+    for (let k = invIdx + 1; k < Math.min(ls.length, invIdx + 7); k++) {
+      if (/^(description|payment|date|dollars?|memo|amount)\b/i.test(ls[k])) continue;
       zoneLines.push(ls[k]);
     }
     const stripped = zoneLines.join(' ')
