@@ -443,6 +443,18 @@ export function parseCheck(text) {
   const ls = lines(text);
   // Payee: tail of the "pay to the order of" line, else the next line.
   const payIdx = ls.findIndex(l => /pay\s+to\s+the\s+order\s+of/i.test(l));
+  // Payer: the company block printed at the TOP of the check, before "pay to
+  // the order of" — that's who the money is from, i.e. the job's company.
+  const boiler = /^(e-?check|cheque|check|no\.?\b|date|issued|void|memo|pay\b|amount|dollars?|authorized|signature)/i;
+  const addressy = /\b(st|street|ave|avenue|blvd|boulevard|suite|ste|unit|rd|road|dr|drive|floor|fl)\b|\d{5}(-\d{4})?$/i;
+  for (const l of ls.slice(0, payIdx > 0 ? payIdx : 6)) {
+    if (!/[A-Za-z]{3}/.test(l)) continue;              // numbers / check no
+    if (boiler.test(l) || addressy.test(l)) continue;
+    if (parseDate(l) || /\$\s*[\d,]+\.\d{2}/.test(l)) continue;
+    if (/bank|routing|account|deluxe|payable\s+through/i.test(l)) continue;
+    p.employer = l.replace(/,.*$/, '').trim();
+    break;
+  }
   if (payIdx >= 0) {
     const tail = ls[payIdx].replace(/.*order\s+of\s*:?\s*/i, '').trim();
     p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : (ls[payIdx + 1] || ''))

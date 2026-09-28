@@ -6,7 +6,17 @@ function daysBetween(a, b) {
 }
 
 function overlapScore(stub, job) {
-  if (!stub.period_start || !job.start_date) return 0;
+  if (!job.start_date) return 0;
+  // Checks carry only an issue date, no work period — but payments land
+  // within terms of wrap, so a check dated 0-45 days after the job's last
+  // day is a solid date signal (gear terms are ~30 days).
+  if (!stub.period_start) {
+    if (!stub.check_date) return 0;
+    const gap = daysBetween(job.end_date || job.start_date, stub.check_date);
+    if (gap >= -1 && gap <= 45) return 25;
+    if (gap > 45 && gap <= 70) return 10;
+    return 0;
+  }
   const s1 = stub.period_start, e1 = stub.period_end || stub.period_start;
   const s2 = job.start_date, e2 = job.end_date || job.start_date;
   const start = s1 > s2 ? s1 : s2;
@@ -64,7 +74,8 @@ function gearScore(stub, job) {
 }
 
 function nameScore(stub, job) {
-  const stubNames = [norm(stub.project_name), norm(stub.employer)].filter(Boolean);
+  // job_title carries a check's memo line — memos often name the show.
+  const stubNames = [norm(stub.project_name), norm(stub.employer), norm(stub.job_title)].filter(Boolean);
   const jobNames = [norm(job.project), norm(job.company)].filter(Boolean);
   let best = 0;
   for (const a of stubNames) {
