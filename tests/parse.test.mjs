@@ -533,7 +533,7 @@ AUTHORIZED SIGNATURE`;
   assert.equal(p.check_no, '0520');
   assert.equal(p.check_date, '2026-09-04');
   assert.match(p.payee, /Example Media Co/);
-  assert.match(p.job_title, /Inv #2627/);
+  assert.match(p.memo, /Inv #2627/);
   // Memo names equipment, so the whole check counts as GEAR, not wages.
   assert.equal(p.earnings.length, 1);
   assert.match(p.earnings[0].type, /Equipment/);
@@ -574,7 +574,7 @@ AUTHORIZED SIGNATURE`;
   const p = parseStub(txt);
   assert.equal(p.vendor, 'check');
   assert.equal(p.employer, 'Example Pictures LLC');   // not the bank, not "mand H"
-  assert.ok(!/CITY NATIONAL/i.test(p.job_title), `job_title was ${p.job_title}`);
+  assert.ok(!/CITY NATIONAL/i.test(p.memo), `memo was ${p.memo}`);
   assert.equal(p.gross, 2500);
   assert.equal(p.check_no, '0817');
 });
@@ -629,7 +629,7 @@ EP Security features. Details on back.`;
   assert.equal(p.gross, 2000);                          // asterisk-protected, no $
   assert.equal(p.check_no, '84556');
   assert.equal(p.check_date, '2026-09-23');             // date beside check no, not inv date
-  assert.equal(p.job_title, 'Inv #2629, #2630');        // BOTH invoices
+  assert.equal(p.memo, 'Inv #2629, #2630');             // BOTH invoices
   assert.match(p.earnings[0].type, /Equipment/);        // DIT EQUIPMENT description
   assert.equal(p.earnings[0].amount, 2000);
 });

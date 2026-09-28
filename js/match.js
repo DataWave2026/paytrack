@@ -75,7 +75,7 @@ function gearScore(stub, job) {
 
 function nameScore(stub, job) {
   // job_title carries a check's memo line — memos often name the show.
-  const stubNames = [norm(stub.project_name), norm(stub.employer), norm(stub.job_title)].filter(Boolean);
+  const stubNames = [norm(stub.project_name), norm(stub.employer), norm(stub.job_title), norm(stub.memo)].filter(Boolean);
   const jobNames = [norm(job.project), norm(job.company)].filter(Boolean);
   let best = 0;
   for (const a of stubNames) {
