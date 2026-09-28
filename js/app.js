@@ -1211,6 +1211,32 @@ async function runStubPipeline(file) {
 
 function confirmStubForm(parsed, uploaded, ocrText) {
   const p = { ...parsed };
+  // Auto-select who the check is made out to: the payee on the check vs the
+  // two names saved in Setup -> Profile. No match = leave unset AND flag it.
+  const sqk = (x) => (x || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  // Names also match by word set, so "HAMMOND, STUART M." = "STUART HAMMOND".
+  const nameWords = (x) => new Set((x || '').toLowerCase().match(/[a-z]{2,}/g) || []);
+  const wordsMatch = (a, b) => {
+    const wa = nameWords(a), wb = nameWords(b);
+    if (wa.size < 2 || wb.size < 2) return false;
+    let common = 0;
+    for (const w of wa) if (wb.has(w)) common++;
+    return common >= 2;
+  };
+  if (!p.paid_to && p.payee) {
+    const pv = sqk(p.payee), co = sqk(settings().companyName), me = sqk(settings().personalName);
+    if (co && (pv.includes(co) || co.includes(pv) || wordsMatch(p.payee, settings().companyName))) p.paid_to = 'company';
+    else if (me && (pv.includes(me) || me.includes(pv) || wordsMatch(p.payee, settings().personalName))) p.paid_to = 'me';
+  }
+  const payeeNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
+  if (p.payee) {
+    if (p.paid_to === 'company') payeeNote.textContent = `Made out to "${p.payee}" — your company ✓`;
+    else if (p.paid_to === 'me') payeeNote.textContent = `Made out to "${p.payee}" — you personally ✓`;
+    else {
+      payeeNote.textContent = `⚠ Made out to "${p.payee}" — doesn't match your saved company or personal name. Pick who was paid (names live in Setup → Profile).`;
+      payeeNote.style.color = 'var(--warn)';
+    }
+  }
   const input = (key, attrs = {}) => h('input', {
     value: Array.isArray(p[key])
       ? (key === 'hourly_rates' ? p[key].map(r => '$' + r).join(', ') : p[key].join(', '))
@@ -1293,6 +1319,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
         return sel;
       })()),
       h('div', {}, h('label', {}, 'Job title'), input('job_title', { placeholder: 'Digital Imaging Tech' }))),
+    payeeNote,
     h('div', { class: 'row2' },
       h('div', {}, h('label', {}, 'Period start'), input('period_start', { type: 'date' })),
       h('div', {}, h('label', {}, 'Period end'), input('period_end', { type: 'date' }))),
@@ -2019,7 +2046,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v88';
+const APP_VERSION = 'v89';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

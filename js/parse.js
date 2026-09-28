@@ -14,7 +14,9 @@ export function parseDate(s) {
     if (mo) return `${m[3]}-${String(mo).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
   }
   m = s.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);                   // 08/25/2026
-  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+    return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
   m = s.match(/(\d{4})-(\d{2})-(\d{2})/);                               // 2026-08-25
   if (m) return m[0];
   return '';
@@ -31,7 +33,7 @@ const lines = (text) => text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 // Lines that are themselves field labels. Photographed stubs often OCR as a
 // label column followed by a value column, so values must be paired by
 // block position, not just "next line".
-const LABEL_PHRASES = /(project|work\s+period\s+(start|end)\s+date|days\s+worked|controlling\s+employer|payroll\s+employer|check\s+date|name|address|classification|job\s+title|loan\s+out\s+company|earning\s+type|time\s+worked|rate|work\s+location|amount|gross\s+earnings|total\s+deductions|net\s+earnings|payments|primary\s+account|total\s+hours\s+worked|pay\s+(date|period)|employee|date|notes)/gi;
+const LABEL_PHRASES = /(project|work\s+period\s+(start|end)\s+date|days\s+worked|controlling\s+employer|payroll\s+employer|check\s+(date|no\.?)|name|address|classification|job\s+(title|type|name)|loan\s+out\s+company|earning\s+type|time\s+worked|rate|work\s+(location|date)|amount|gross\s+earnings|total\s+deductions|net\s+(earnings|wages)|payments|primary\s+account|total\s+(worked\s+)?hours(\s+worked)?(\/units)?|pay\s+(date|period)|employee|date|notes|batch|client\s+job\s*#?|extra\s+withholding|res\s+state|state\s+allow|federal\s+filing\s+status|union\s*#?|location|cur\s+amt|ytd\s+(amt|taxable|non-tax|earnings|deductions|net\s+wages)|fica|deductions|social\s+security\s+no\.?|current(\s+(earnings|deductions|taxable|non-tax))?|total\s+gross|description|hours\/units)/gi;
 
 // A "label line" may be ONE label or SEVERAL fused together — Google's OCR
 // merges adjacent cells ("Work Period End Date Days Worked"). A line is
@@ -199,16 +201,22 @@ export function parseDeductions(text) {
 
 function parseGenericInto(p, text) {
   const ls = lines(text);
-  if (!p.gross) p.gross = parseMoney(labeled(ls, /gross\s+(earnings|pay|wages|amount)/i, isMoney));
-  if (!p.net) p.net = parseMoney(labeled(ls, /net\s+(earnings|pay|amount)/i, isMoney));
+  if (!p.gross) p.gross = parseMoney(labeled(ls, /current\s+earnings|total\s+gross|gross\s+(earnings|pay|wages|amount)/i, isMoney));
+  if (!p.net) p.net = parseMoney(labeled(ls, /net\s+(earnings|pay|wages|amount)/i, isMoney));
   if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date|pay\s+date|date\s+of\s+payment/i, isDate));
   if (!p.check_no) {
-    const m = text.match(/check\s*#?\s*(\d{5,})/i);
+    const m = text.match(/check\s*(?:no\.?|number|#)?\s*[:#]?\s*(\d{4,})/i);
     if (m) p.check_no = m[1];
   }
   if (!p.period_start) {
     p.period_start = parseDate(labeled(ls, /(work\s+)?period\s+(start|begin(ning)?)(\s+date)?/i, isDate));
     p.period_end = p.period_end || parseDate(labeled(ls, /(work\s+)?period\s+end(ing)?(\s+date)?/i, isDate));
+  }
+  if (!p.period_start) {
+    // "Pay Period 09/01/2026 09/15/2026" — both dates on the label line.
+    const pp = ls.find(l => /pay\s+period/i.test(l));
+    const ds = pp ? allDates(pp) : [];
+    if (ds.length >= 2) { p.period_start = ds[0]; p.period_end = ds[1]; }
   }
   if (!p.period_start) {
     const m = text.match(/period[:\s]+([^\n]+?)\s*(?:-|to|through|–)\s*([^\n]+)/i);
@@ -224,7 +232,7 @@ function parseGenericInto(p, text) {
   if (!p.earnings.length) p.earnings = parseEarnings(text);
   if (!p.deductions.length) p.deductions = parseDeductions(text);
   if (p.total_deductions === null) {
-    p.total_deductions = parseMoney(labeled(ls, /total\s+deductions/i, isMoney));
+    p.total_deductions = parseMoney(labeled(ls, /total\s+deductions|current\s+deductions/i, isMoney));
   }
   // Invoice-style stubs bury Gross among stray lines — the earnings sum is it.
   if (p.gross === null && p.earnings.length) {
@@ -244,16 +252,53 @@ function parseGenericInto(p, text) {
     }
   }
   if (!p.project_name) {
-    p.project_name = labeled(ls, /^project(\s+name)?\b/i, projectish);
+    p.project_name = labeled(ls, /^project(\s+name)?\b/i, projectish)
+      || labeled(ls, /^job\s+name\b/i, projectish);
+  }
+  if (!p.project_name || /^(commercial|feature|tv|television|music\s+video|pilot|episodic)$/i.test(p.project_name)) {
+    // Cast & Crew-style stubs: the show name carries its job code
+    // ("T-MOBILE #CO-37509") — the label block only yields the job TYPE.
+    const jl = ls.find(l => /#\s*[A-Z]{2,3}-\d{3,}/.test(l) && /[A-Za-z]{2}/.test(l.replace(/#.*$/, '')));
+    if (jl) p.project_name = jl.replace(/\s*#.*$/, '').trim();
   }
   if (!p.payee) {
-    p.payee = labeled(ls, /paid\s+to|payee|payable\s+to/i)
-      || labeled(ls, /^employee(\s+name)?\b/i);
+    // Attached-check portion first: "TO THE ORDER OF" then the name (the
+    // label and name are often on separate lines).
+    const oi = ls.findIndex(l => /to\s+the\s+order\s+of/i.test(l));
+    if (oi >= 0) {
+      const tail = ls[oi].replace(/.*order\s+of\s*:?\s*/i, '').trim();
+      const next = ls.slice(oi + 1, oi + 4).find(l => !LABELY.test(l) && /[A-Za-z]{2}/.test(l)) || '';
+      p.payee = (/[A-Za-z]/.test(tail) ? tail : next);
+    }
+    const namey = (v) => /[A-Za-z]{2,}/.test(v) && !EARN_TYPES.test(v)
+      && !/fica|medicare|tax|dues|deduction/i.test(v);
+    if (!p.payee) {
+      p.payee = labeled(ls, /paid\s+to|payee|payable\s+to/i, namey)
+        || labeled(ls, /^employee(\s+name)?\b/i, namey);
+    }
     p.payee = p.payee.replace(/,.*$/, '');
   }
   if (!p.employer) {
     p.employer = labeled(ls, /controlling\s+employer|production\s+company|client|employer\s+name/i)
       .replace(/,.*$/, '');
+  }
+  if (!p.payroll_employer) {
+    // "Payroll Employer is NEW CAPS, LLC 2300 EMPIRE AVE..." — company name
+    // up to its suffix; the address tail is dropped.
+    const m = text.match(/payroll\s+employer\s+(?:is\s+)?(.+?(?:llc|inc|ltd|corp)\b\.?)/i);
+    if (m) p.payroll_employer = m[1].trim();
+  }
+  if (p.day_count === null) {
+    // Per-day work ranges ("09/11/2026-09/11/2026" repeated per line item):
+    // distinct valid start dates = days worked.
+    const starts = new Set();
+    for (const m of text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*\d{1,2}\/\d{1,2}\/\d{4}/g)) {
+      const d = parseDate(m[1]);
+      // OCR-garbled years ("09/11/2028" on a 2026 stub) must not inflate
+      // the count — keep dates in the pay period's year when it's known.
+      if (d && (!p.period_start || d.slice(0, 4) === p.period_start.slice(0, 4))) starts.add(d);
+    }
+    if (starts.size) p.day_count = starts.size;
   }
   return p;
 }
@@ -421,7 +466,7 @@ const VENDORS = [
   { re: /wrapbook/i, fn: parseWrapbook },
   // Cast & Crew / Entertainment Partners / GreenSlate templates get added
   // here as real stubs from those vendors arrive; generic covers them until then.
-  { re: /cast\s*&?\s*crew/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Cast & Crew' }, t) },
+  { re: /cast\s*&?\s*crew|castandcrew|new\s+caps,?\s+llc/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Cast & Crew' }, t) },
   { re: /entertainment\s+partners|\bEP\s+payroll/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Entertainment Partners' }, t) },
   { re: /greenslate/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'GreenSlate' }, t) },
   { re: /media\s+services/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Media Services' }, t) },

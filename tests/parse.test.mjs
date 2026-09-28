@@ -688,3 +688,73 @@ PAYMENT
   assert.equal(p.check_date, '2026-09-23');
   assert.equal(p.memo, 'Inv #2629, #2630');
 });
+
+test('Cast & Crew stub: fused labels, Pay Period line, attached check', () => {
+  const txt = `Payroll Employer is PAYCO WEST, LLC 100 EXAMPLE AVE, 5TH FL, BURBANK, CA 91504 FEIN # 00-0000000
+COMPLETE THE NEW FED W-4 & ACCESS PAYSTUBS AT MY.CASTANDCREW.COM
+Employee Name
+FICA
+JANE DOE
+Deductions
+Cur Amt
+YTD Amt
+Federal Income Tax
+105.38
+634.18
+Medicare Tax
+17.80
+72.56
+LOCAL 600 DUES
+12.27
+49.21
+Social Security No. XXX-XX-0000 Deductions
+Check Date 09/23/2026
+Check No. 608852718
+Pay Period 09/01/2026 09/15/2026
+Current Earnings
+1,247.49
+Current Deductions
+270.54
+Net Wages
+976.95
+Controlling Employer
+Job Type
+Job Name
+BRIGHT FUTURE, LLC
+Batch
+COMMERCIAL
+Client Job #
+2027603 CO-12345
+RIVERTON #CO-12345
+Work Date
+Union #
+09/11/2026-09/11/2026
+600
+09/11/2026-09/11/2026
+600
+09/11/2028-00/11/2029
+600
+DIGITAL IMAGING TECHNICIAN-STRAIGHT-TIME
+90.090909
+8.00
+720.73
+Total Worked Hours/Units
+PAY Sum of NINE HUNDRED SEVENTY-SIX AND 95/100 DOLLARS
+TO THE ORDER OF
+JANE DOE
+100 SAMPLE ST
+PASADENA, CA 91105`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'Cast & Crew');
+  assert.equal(p.employer, 'BRIGHT FUTURE');
+  assert.equal(p.payroll_employer, 'PAYCO WEST, LLC');
+  assert.equal(p.project_name, 'RIVERTON');          // show name, not job TYPE
+  assert.match(p.payee, /JANE DOE/);
+  assert.equal(p.period_start, '2026-09-01');
+  assert.equal(p.period_end, '2026-09-15');
+  assert.equal(p.gross, 1247.49);
+  assert.equal(p.net, 976.95);
+  assert.equal(p.check_no, '608852718');
+  assert.equal(p.total_deductions, 270.54);
+  assert.equal(p.day_count, 1);                      // junk 2028 date excluded
+});
