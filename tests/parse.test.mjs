@@ -514,3 +514,45 @@ test('jobToNote carries check numbers per part', () => {
     { wages: '123' });
   assert.ok(!/check/.test(unpaid));
 });
+
+test('a bare eCheck parses as a check document', () => {
+  const txt = `Streamline Media LLC
+0520
+eCheck
+ISSUED 09/04/2026
+PAY TO THE ORDER OF Example Media Co $1,900.00
+One thousand nine hundred dollars and 00/100
+VOID AFTER 90 DAYS
+Memo: 20261022 Digitech EQ Inv#2627
+AUTHORIZED SIGNATURE`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.gross, 1900);
+  assert.equal(p.check_no, '0520');
+  assert.equal(p.check_date, '2026-09-04');
+  assert.match(p.payee, /Example Media Co/);
+  assert.match(p.job_title, /Inv #2627/);
+  // Memo names equipment, so the whole check counts as GEAR, not wages.
+  assert.equal(p.earnings.length, 1);
+  assert.match(p.earnings[0].type, /Equipment/);
+  assert.equal(p.earnings[0].amount, 1900);
+});
+
+test('a wage check without gear words counts as wages', () => {
+  const txt = `PAY TO THE ORDER OF Jane Doe
+Check No. 8841
+Amount $955.00
+Date 09/12/2026
+Memo: Riverton day rate`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.check_no, '8841');
+  assert.equal(p.gross, 955);
+  assert.match(p.earnings[0].type, /Check payment/);
+});
+
+test('a full stub with an attached check portion still parses as a stub', () => {
+  const withCheck = wrapbook + '\nPAY TO THE ORDER OF Example Person\nVOID AFTER 90 DAYS $1.00';
+  const p = parseStub(withCheck);
+  assert.notEqual(p.vendor, 'check');
+});
