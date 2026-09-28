@@ -633,3 +633,19 @@ EP Security features. Details on back.`;
   assert.match(p.earnings[0].type, /Equipment/);        // DIT EQUIPMENT description
   assert.equal(p.earnings[0].amount, 2000);
 });
+
+test('invoice numbers on the lines BELOW the INVOICE# label still parse', () => {
+  const txt = `BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF EXAMPLE MEDIA CO
+*********2,000.00
+84556
+09/23/2026 84556
+INVOICE#
+09/08/2026 2629
+09/14/2026 2630 1,000.00
+DIT EQUIPMENT
+VOID AFTER 90 DAYS`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.memo, 'Inv #2629, #2630');
+});
