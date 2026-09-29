@@ -171,6 +171,14 @@ export async function pushJobToCalendar(job) {
 
   if (job.deleted) {
     await deleteAll();
+    // The remembered ids can be lost (a repair/restore clears them) — sweep
+    // EVERY event still tagged with this job so a deleted job never leaves
+    // events behind.
+    try {
+      for (const ev of await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id)) {
+        await g.deleteEvent(s.calendarId, ev.id);
+      }
+    } catch (e) { log('delSweepErr', String(e.message)); }
   } else if (perDay.length) {
     // Only the days actually worked get calendar events — never a full-week
     // block for a pay period.
@@ -413,7 +421,13 @@ export async function cleanupCalendarDuplicates(onProgress) {
     let evs = [];
     try { evs = await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id); }
     catch (e) { log('cleanupListErr', String(e.message)); continue; }
-    if (evs.length) {
+    if (evs.length && job.deleted) {
+      // A deleted job keeps NO events — remove every tagged one.
+      for (const ev of evs) {
+        await g.deleteEvent(s.calendarId, ev.id);
+        removed++;
+      }
+    } else if (evs.length) {
       const known = new Set([job.calendar_event_id, ...(job.calendar_event_ids || [])].filter(Boolean));
       const byDate = {};
       for (const ev of evs) {
