@@ -267,7 +267,7 @@ function jobRow(job, stubsByJob) {
       }, 'Confirm') : null,
       // A hold isn't an official job yet: neutral "wages: — / gear: —" until confirmed.
       // Invoice state is a tap-toggle right on the row: not sent <-> sent.
-      job.invoice_status !== 'na' && job.job_status !== 'hold' ? h('button', {
+      ['unsent', 'sent'].includes(job.invoice_status) && job.job_status !== 'hold' ? h('button', {
         class: 'badge ' + (job.invoice_status === 'unsent' ? 'partial' : 'paid'),
         style: 'border:none;cursor:pointer;font-weight:600',
         onclick: async (e) => {
@@ -2046,7 +2046,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v90';
+const APP_VERSION = 'v91';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2128,7 +2128,23 @@ async function dedupeChecks() {
       for (const k of ['rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate', 'gear_total', 'days_worked']) {
         if (typeof job[k] === 'number' && Number.isNaN(job[k])) { job[k] = null; dirty = true; }
       }
+      // Records predating the invoice feature carry '' — normalize so the
+      // row badge can't misreport them ('' rendered as "invoice: sent").
+      if (!['na', 'unsent', 'sent'].includes(job.invoice_status)) {
+        job.invoice_status = job.wages_status === 'paid' ? 'na' : 'unsent';
+        dirty = true;
+      }
       if (dirty) { await store.putJob(job, { silent: true }); log('scrubJob', { project: job.project }); }
+    }
+    // Old scans left label junk in stub name fields ("Social Security No.",
+    // "FICA", "Job Type") — blank those so matching and display stay clean.
+    const labelJunk = /^(social\s+security|fica|job\s+type|job\s+name|employee(\s+name)?|deductions?|check\s+(no|date)|work\s+period|memo)\b/i;
+    for (const stb of await store.allStubs()) {
+      let sdirty = false;
+      for (const k of ['payee', 'employer', 'project_name', 'job_title']) {
+        if (stb[k] && labelJunk.test(stb[k])) { stb[k] = ''; sdirty = true; }
+      }
+      if (sdirty) { await store.putStub(stb); log('scrubStub', { chk: stb.check_no || '' }); }
     }
     const jobs = await store.allJobs();
     for (const job of jobs) {
