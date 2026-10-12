@@ -758,3 +758,73 @@ PASADENA, CA 91105`;
   assert.equal(p.total_deductions, 270.54);
   assert.equal(p.day_count, 1);                      // junk 2028 date excluded
 });
+
+test('Entertainment Partners digital stub (loan-out, 2-digit years, stacked labels)', () => {
+  // Modeled on a real EP PDF stub; names, numbers and addresses fictionalized.
+  const txt = `!
+ENTERTAINMENT PARTNERS SERVICES LLC 2950 N HOLLYWOOD WAY,
+BURBANK, CA 91505
+www.ep.com Version-14.00- (818) 555-0100 94.8
+\tEXAMPLE MEDIA CO TAX ID: ***-**-0000 FSO: DOE/JANE M SSN: ***-**-0000
+Mailing Address W-2/1099 Address
+100 MAIN ST
+PASADENA, CA 91105
+\t11112222
+Check No:
+Check Date:
+10/08/2026
+Batch:
+PCC 14324933
+Ref / Inv:
+00117929 / ABC119
+\tPAY PERIOD
+Start: 09/27/26 End: 10/03/26 Tax / Work Days:
+5 / 2
+Res / Work State:
+CA / CA
+\tClient: BRIGHT PLANT PRODUCTIONS LLC
+Address: 100 WEST ALAMEDA AVENUE
+Prod Title: RIVER OF STARS - SEASON 2
+\tDesc Hours Amount
+Rate: Hourly
+REG
+77.2731
+16.0
+1,236.37
+O.T.
+115.9083
+6.0
+695.45
+DIEM
+100.00
+Union:
+NON-UNION
+Occupation Title:
+DIGITAL IMAGING TECHNICIAN
+\tTaxes Deductions Current Amt YTDDIRDP1 2,031.82 2,881.82
+\tTOTALS Hours Gross FIT Taxable Deductions Net Pay
+\tCurrent:
+YTD:22.0 2,031.82
+Deposit
+Advice: EXAMPLE MEDIA CO
+FSO: JANE M DOE`;
+  const p = parseStub(txt);
+  assert.equal(p.vendor, 'Entertainment Partners');
+  assert.equal(p.project_name, 'RIVER OF STARS - SEASON 2');
+  assert.equal(p.employer, 'BRIGHT PLANT PRODUCTIONS LLC');
+  assert.match(p.payroll_employer, /ENTERTAINMENT PARTNERS/);
+  assert.equal(p.payee, 'EXAMPLE MEDIA CO');
+  assert.equal(p.paid_to, 'company');                 // FSO = loan-out
+  assert.equal(p.check_no, '11112222');               // printed ABOVE its label
+  assert.equal(p.check_date, '2026-10-08');
+  assert.equal(p.period_start, '2026-09-27');         // 2-digit years
+  assert.equal(p.period_end, '2026-10-03');
+  assert.equal(p.day_count, 2);                       // Tax / Work Days: 5 / 2
+  assert.equal(p.job_title, 'DIGITAL IMAGING TECHNICIAN');
+  assert.equal(p.memo, 'Ref 00117929 · Inv ABC119');
+  assert.deepEqual(p.earnings.map(e => [e.type, e.hours, e.amount]),
+    [['Straight time', 16, 1236.37], ['Overtime', 6, 695.45], ['Per diem', null, 100]]);
+  assert.equal(p.gross, 2031.82);
+  assert.equal(p.net, 2031.82);
+  assert.equal(p.hours, 22);
+});

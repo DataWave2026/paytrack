@@ -73,11 +73,33 @@ function gearScore(stub, job) {
   return 0;
 }
 
+// Shows get logged by acronym: "AGE OF ATTRACTION - SEASON 2" -> "aoa2"
+// ("season N" collapses to N; every other word gives its first letter).
+export function acronym(s) {
+  const w = norm(s).split(' ').filter(Boolean);
+  let out = '';
+  for (let i = 0; i < w.length; i++) {
+    if (/^(season|s|series|part|pt|vol)$/.test(w[i]) && /^\d+$/.test(w[i + 1] || '')) { out += w[++i]; continue; }
+    out += /^\d+$/.test(w[i]) ? w[i] : w[i][0];
+  }
+  return out;
+}
+
 function nameScore(stub, job) {
   // job_title carries a check's memo line — memos often name the show.
   const stubNames = [norm(stub.project_name), norm(stub.employer), norm(stub.job_title), norm(stub.memo)].filter(Boolean);
   const jobNames = [norm(job.project), norm(job.company)].filter(Boolean);
   let best = 0;
+  // Acronym of the stub's show title vs the job name as typed ("AoA2",
+  // "AOA2 - prep"): exact = strong, prefix = solid.
+  const ac = acronym(stub.project_name);
+  if (ac.length >= 3) {
+    for (const b of jobNames) {
+      const sq = b.replace(/\s/g, '');
+      if (sq === ac) best = Math.max(best, 35);
+      else if (sq.startsWith(ac) || b.split(' ')[0] === ac) best = Math.max(best, 25);
+    }
+  }
   for (const a of stubNames) {
     for (const b of jobNames) {
       if (!a || !b) continue;
