@@ -228,6 +228,10 @@ label.ellip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; di
 .daychip-month { display: block; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 0 4px; }
 .daychip .dom { font-size: 1rem; font-weight: 600; }
 .daychip.on { background: rgba(76,195,138,.22); border-color: var(--accent); color: var(--accent); }
+/* Paid by a check: solid fill + $ corner mark (after .on/.travel so it wins). */
+.daychip { position: relative; }
+.daychip.paid, .daychip.on.paid, .daychip.on.travel.paid { background: var(--accent); border-color: var(--accent); color: #0b1a12; }
+.daychip .paidmark { position: absolute; top: 1px; right: 4px; font-size: .58rem; font-weight: 800; line-height: 1; }
 
 .ginv { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px 10px; margin-bottom: 8px; }
 .ginv-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
