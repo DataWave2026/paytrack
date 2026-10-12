@@ -36,7 +36,7 @@ const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name'
   'deductions', 'total_deductions',
   'created_at', 'updated_at',
   // Appended columns only (positional history; reads are header-mapped).
-  'memo'];
+  'memo', 'work_dates'];
 
 const JSON_COLS = ['earnings', 'deductions', 'gear_invoices'];
 const toRow = (cols, rec) => cols.map(c => {
