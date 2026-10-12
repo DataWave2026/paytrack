@@ -1,6 +1,6 @@
 // Offline shell: NETWORK-FIRST for app files (so updates appear on the next
 // load), cache fallback when offline. Google APIs are never cached.
-const CACHE = 'paytrack-v99';
+const CACHE = 'paytrack-v100';
 const SHELL = [
   '.', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/auth.js', 'js/config.js', 'js/google.js', 'js/match.js',
@@ -22,8 +22,12 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;   // Google APIs etc: network only
+  if (e.request.method !== 'GET') return;
+  // cache:'no-cache' revalidates with the server every time (cheap 304s).
+  // A plain fetch() honours GitHub Pages' 10-minute max-age, so a fresh
+  // deploy could keep serving the previous app version for minutes.
   e.respondWith(
-    fetch(e.request).then(resp => {
+    fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then(resp => {
       if (resp.ok) {
         const copy = resp.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
