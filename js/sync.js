@@ -103,6 +103,29 @@ export async function ensureCloudSetup() {
   }
 }
 
+// ---------- Shared calendar choice ----------
+// Each install keeps its own settings, so a new install (Dock app, phone)
+// used to have NO calendar picked and silently skipped every calendar
+// update. The choice now lives on the sheet file: a device without one
+// adopts it; a device with one publishes it when the sheet has none.
+export async function syncCalendarChoice() {
+  const s = settings();
+  if (!s.sheetId) return;
+  const props = await g.getFileProps(s.sheetId);
+  if (!s.calendarId && props.calendarId) {
+    saveSettings({ calendarId: props.calendarId, calendarName: props.calendarName || '', lastCalPull: '' });
+    log('calendarAdopted', { name: props.calendarName || '' });
+  } else if (s.calendarId && !props.calendarId) {
+    await g.setFileProps(s.sheetId, { calendarId: s.calendarId, calendarName: s.calendarName || '' });
+  }
+}
+export async function publishCalendarChoice() {
+  const s = settings();
+  if (s.sheetId && s.calendarId) {
+    await g.setFileProps(s.sheetId, { calendarId: s.calendarId, calendarName: s.calendarName || '' });
+  }
+}
+
 // ---------- Sheet mirror ----------
 let mirrorTimer = null;
 export function scheduleMirror() {

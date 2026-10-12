@@ -101,6 +101,18 @@ export async function uploadScan(file, name, ocrText) {
   return photo.id;
 }
 
+// Small shared settings stored ON the PayTrack DB sheet file itself (Drive
+// appProperties) — every device reads the same values without a new tab.
+export async function getFileProps(fileId) {
+  const r = await call(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=appProperties`);
+  return r.appProperties || {};
+}
+export async function setFileProps(fileId, props) {
+  await call(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id`, {
+    method: 'PATCH', json: { appProperties: props },
+  });
+}
+
 // Drive's built-in OCR: upload the image converting it to a Google Doc,
 // export the doc as plain text, then delete the temporary doc.
 export async function ocrImage(file) {
