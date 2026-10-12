@@ -189,7 +189,14 @@ async function home() {
   });
   const unattributed = last3.reduce((s, r) => s + r.un, 0);
 
+  // A connected device with no calendar picked saves jobs to the cloud but
+  // never updates the calendar — say so loudly instead of failing silently.
+  const noCal = settings().everConnected && !settings().calendarId;
   return h('div', {},
+    noCal ? h('div', { class: 'card', style: 'border-color:var(--warn)' },
+      h('p', { style: 'margin:0;color:var(--warn)' },
+        'No calendar is selected on this device, so job changes here won\'t reach your calendar. ',
+        h('a', { href: '#', onclick: (e) => { e.preventDefault(); render('settings'); } }, 'Pick it in Setup'), '.')) : null,
     h('div', { class: 'card' },
       h('h2', {}, 'Outstanding'),
       h('div', { class: 'stat-row' },
@@ -2035,6 +2042,7 @@ async function settingsView() {
               class: 'candidate' + (c.id === s.calendarId ? ' best' : ''),
               onclick: () => {
                 saveSettings({ calendarId: c.id, calendarName: c.summary, lastCalPull: '' });
+                sync.publishCalendarChoice().catch(() => {});
                 toast(`Syncing with "${c.summary}".`);
                 render('settings');
               },
@@ -2239,7 +2247,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v98';
+const APP_VERSION = 'v99';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2420,6 +2428,7 @@ async function backgroundSync() {
   // never strand this device's data outside the sheet.
   const errs = [];
   for (const [name, fn] of [
+    ['calendarChoice', () => sync.syncCalendarChoice()],
     ['pullCalendar', () => sync.pullCalendar()],
     ['pullSheet', () => sync.pullSheet()],
     ['pushUnsynced', () => sync.pushUnsynced()],
