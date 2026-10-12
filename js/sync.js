@@ -114,8 +114,10 @@ export async function mirrorSheet() {
   const s = settings();
   if (!s.sheetId) return;
   // Merge remote rows first so a full-table write never clobbers a job that
-  // another device added since our last pull.
-  await pullSheet().catch(() => {});
+  // another device added since our last pull. If the pull FAILS (expired
+  // login, network), abort: writing this device's possibly-stale table over
+  // the sheet would erase other devices' records and revert their edits.
+  await pullSheet();
   await store.dropStubHusks().catch(() => {});
   const jobs = await store.allJobs({ includeDeleted: true });
   const stubs = await store.allStubs();
