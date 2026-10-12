@@ -2239,7 +2239,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v97';
+const APP_VERSION = 'v98';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2327,7 +2327,7 @@ async function dedupeChecks() {
         job.invoice_status = job.wages_status === 'paid' ? 'na' : 'unsent';
         dirty = true;
       }
-      if (dirty) { await store.putJob(job, { silent: true }); log('scrubJob', { project: job.project }); }
+      if (dirty) { await store.putJob(job, { silent: true, keepStamp: true }); log('scrubJob', { project: job.project }); }
     }
     // Old scans left label junk in stub name fields ("Social Security No.",
     // "FICA", "Job Type") — blank those so matching and display stay clean.
@@ -2337,7 +2337,7 @@ async function dedupeChecks() {
       for (const k of ['payee', 'employer', 'project_name', 'job_title']) {
         if (stb[k] && labelJunk.test(stb[k])) { stb[k] = ''; sdirty = true; }
       }
-      if (sdirty) { await store.putStub(stb); log('scrubStub', { chk: stb.check_no || '' }); }
+      if (sdirty) { await store.putStub(stb, { keepStamp: true }); log('scrubStub', { chk: stb.check_no || '' }); }
     }
     const jobs = await store.allJobs();
     for (const job of jobs) {
@@ -2348,7 +2348,7 @@ async function dedupeChecks() {
         .join('\n');
       if (uniq !== job.notes) {
         job.notes = uniq;
-        await store.putJob(job, { silent: true });
+        await store.putJob(job, { silent: true, keepStamp: true });
       }
     }
     if (removed) {
@@ -2373,7 +2373,7 @@ async function backfillPaidVia() {
         || ss.find(s => /loan\s*-?\s*out/i.test(s.classification || ''));
       if (hit) {
         job.paid_via = hit.paid_to || 'company';
-        await store.putJob(job, { silent: true });
+        await store.putJob(job, { silent: true, keepStamp: true });
         changed = true;
       }
     }

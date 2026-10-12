@@ -104,8 +104,11 @@ export async function getJob(id) {
   }));
 }
 
-export async function putJob(job, { silent = false } = {}) {
-  job.updated_at = now();
+// keepStamp: automatic repairs keep the record's edit time, so a repair run
+// on a device holding an outdated copy can never outrank a real edit made
+// elsewhere (newest updated_at wins every merge).
+export async function putJob(job, { silent = false, keepStamp = false } = {}) {
+  if (!keepStamp || !job.updated_at) job.updated_at = now();
   await tx('jobs', 'readwrite', s => s.put(job));
   if (!silent) changed();
   return job;
@@ -162,8 +165,8 @@ export async function allStubs() {
   return stubs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 }
 
-export async function putStub(stub) {
-  stub.updated_at = now();
+export async function putStub(stub, { keepStamp = false } = {}) {
+  if (!keepStamp || !stub.updated_at) stub.updated_at = now();
   if (!stub.created_at) stub.created_at = stub.updated_at;
   await tx('stubs', 'readwrite', s => s.put(stub));
   changed();
