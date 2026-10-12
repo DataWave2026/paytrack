@@ -807,7 +807,8 @@ async function editJob(existing, prefill) {
     const rows = stubs.filter(s => s.gross !== null && s.gross !== undefined).map(s => {
       const gearPart = gearOnStub(s.earnings);
       const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
-      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}${s.memo ? ' · ' + s.memo : ''}`,
+      const dayList = (s.work_dates || []).map(d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`).join(', ');
+      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}${s.memo ? ' · ' + s.memo : ''}${dayList ? ' · days ' + dayList : ''}`,
         gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart),
         hours: s.hours, net: s.net, dsum, dedItems: s.deductions || [] };
     });
@@ -1428,23 +1429,39 @@ async function pickMatch(p, uploaded, ocrText) {
     }
   };
 
-  // Worked-days picker for a NEW job — a stub's pay period often spans a
-  // whole week while only some days were worked; only tapped days go on the
-  // calendar. Preselected only when the stub says every day was worked.
+  // Days-this-check-covers picker (calendar style) over the stub's pay
+  // period. A pay period often spans a week while only some days were
+  // worked. For an existing job it preselects that job's days in the period;
+  // for a new job, every day only when the stub says every day was worked.
   const daySel = new Set();
   const dayBox = h('div', { class: 'daychips' });
   const dayCounter = h('p', { class: 'muted small' }, '');
-  let spanLen = 0;
+  const dayLabel = h('label', {}, '');
+  const periodDays = [];
   if (p.period_start) {
-    for (let d = p.period_start; d <= (p.period_end || p.period_start) && spanLen < 21; d = addDaysStr(d, 1)) spanLen++;
-    if (p.day_count && p.day_count === spanLen) {
-      for (let d = p.period_start; d <= p.period_end; d = addDaysStr(d, 1)) daySel.add(d);
-    }
+    for (let d = p.period_start; d <= (p.period_end || p.period_start) && periodDays.length < 92; d = addDaysStr(d, 1)) periodDays.push(d);
   }
-  const chipCount = fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter);
-  const dayWrap = h('div', { class: 'mt' },
-    h('label', {}, `Days actually worked${p.day_count ? ` — stub says ${p.day_count}` : ''}`),
-    dayBox, dayCounter);
+  let pickedFor;   // job id the selection was last preselected for
+  const preselectDays = () => {
+    const id = chosen ? chosen.id : null;
+    if (id === pickedFor) return;   // keep the user's taps across redraws
+    pickedFor = id;
+    daySel.clear();
+    if (chosen) {
+      const wd = new Set(chosen.work_dates || []);
+      for (const d of periodDays) {
+        if (wd.size ? wd.has(d) : (d >= chosen.start_date && d <= (chosen.end_date || chosen.start_date))) daySel.add(d);
+      }
+    } else if (p.day_count && p.day_count === periodDays.length) {
+      periodDays.forEach(d => daySel.add(d));
+    }
+    dayLabel.textContent = (chosen ? 'Which days does this check cover?' : 'Days actually worked')
+      + (p.day_count ? ` — stub says ${p.day_count}` : '');
+    fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter);
+  };
+  const chipCount = periodDays.length;
+  const dayWrap = h('div', { class: 'mt' }, dayLabel, dayBox, dayCounter,
+    h('p', { class: 'muted small' }, 'Tap days to toggle. Days outside the job\'s dates are added to it — a paid check proves they were worked.'));
 
   const list = h('div', {});
   const list2 = h('div', {});
@@ -1515,7 +1532,9 @@ async function pickMatch(p, uploaded, ocrText) {
         sumNote));
       sumNoteUpd();
     } else splitWrap.replaceChildren();
-    dayWrap.style.display = chosen === null && chipCount > 1 ? '' : 'none';
+    // Hidden for a split: which days belong to which job is ambiguous there.
+    preselectDays();
+    dayWrap.style.display = !split && chipCount > 1 ? '' : 'none';
     updateGearNote();
   };
   redraw();
@@ -1648,6 +1667,19 @@ async function pickMatch(p, uploaded, ocrText) {
         // with company etc. without dumping the whole stub into it.
         if (!job.company && p.employer) job.company = p.employer;
         if (!job.days_worked && p.day_count) job.days_worked = p.day_count;
+        // Fold the check's covered days into an existing job: they were
+        // worked. Only ever ADDS days; the job's range grows to include them,
+        // so the calendar follows when dates moved after the job was logged.
+        const covered = [...daySel].sort();
+        if (chosen && covered.length) {
+          if ((job.work_dates || []).length) {
+            job.work_dates = [...new Set([...job.work_dates, ...covered])].sort();
+            job.days_worked = job.work_dates.length;
+          }
+          if (!job.start_date || covered[0] < job.start_date) job.start_date = covered[0];
+          const last = covered[covered.length - 1];
+          if (last > (job.end_date || job.start_date)) job.end_date = last;
+        }
         // Attribute the payment. The parser (or the user, via the selector)
         // decided from the Name on the stub; fall back to classification.
         const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
@@ -1696,6 +1728,7 @@ async function pickMatch(p, uploaded, ocrText) {
           period_start: p.period_start, period_end: p.period_end,
           hourly_rates: p.hourly_rates || [], hours: p.hours,
           gross: p.gross, net: p.net, check_no: p.check_no, check_date: p.check_date,
+          work_dates: covered,
           matched_job_id: job.id,
           ocr_text_excerpt: (ocrText || '').slice(0, 2000),
         };
@@ -2047,7 +2080,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v92';
+const APP_VERSION = 'v93';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
