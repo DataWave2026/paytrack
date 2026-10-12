@@ -132,7 +132,10 @@ async function home() {
     if (s.matched_job_id) (stubsByJob[s.matched_job_id] ||= []).push(s);
   }
   const real = jobs.filter(j => j.job_status !== 'hold');
-  const unpaidWages = real.filter(j => isWrapped(j) && j.wages_status !== 'paid');
+  // Awaiting wages: wrapped and unpaid, or a weekly-paid job with worked
+  // days to date that no check has covered yet.
+  const unpaidWages = real.filter(j => j.wages_status !== 'paid'
+    && (isWrapped(j) || owedFor(j, stubsByJob).wages > 0));
   const unpaidGear = real.filter(j => {
     const gi = gearInv(j);
     if (gi) return gi.dueAmt > 0;   // weekly billing: due as each week ends
@@ -152,12 +155,7 @@ async function home() {
     const gi = gearInv(j);
     return s + (gi ? gi.dueAmt : (j.gear_total || 0));
   }, 0);
-  const wagesOut = unpaidWages.reduce((s, j) => {
-    if (!j.rate_amount) return s;
-    // Weekly-paid jobs: only the days no check has covered yet are owed.
-    const cov = wageCoverage(j, stubsByJob[j.id]);
-    return s + j.rate_amount * (cov.tracked ? cov.unpaid.length : jobDays(j));
-  }, 0);
+  const wagesOut = unpaidWages.reduce((s, j) => s + owedFor(j, stubsByJob).wages, 0);
   // Red only when actually LATE (past the wages 14d / gear 30d timers, or a
   // job's own expected date); yellow = unpaid but still within terms.
   const lateWages = unpaidWages.some(j => (sync.jobDueDates(j).wages || '9999') < today());
@@ -170,29 +168,22 @@ async function home() {
   const wagesTone = unpaidWages.length ? (lateWages ? 'bad' : 'warn') : 'ok';
   const gearTone = unpaidGear.length ? (lateGear ? 'bad' : 'warn') : 'ok';
 
-  // Last three calendar months, oldest first (wages + gear combined).
+  // Last three calendar months, oldest first (wages + gear combined). Paid
+  // money is dated by when it was paid; owed money by when the work was.
   const nowD = new Date();
+  const events = paidEvents(real, stubsByJob);
   const last3 = [2, 1, 0].map(k => {
     const d = new Date(nowD.getFullYear(), nowD.getMonth() - k, 1);
     const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     let me = 0, co = 0, un = 0, due = 0;
-    const paidBucket = (via, amt) => {
-      if (via === 'company') co += amt;
-      else if (via === 'me') me += amt;
-      else un += amt;
-    };
+    for (const e of events.filter(x => x.m === m)) {
+      if (e.via === 'company') co += e.amt;
+      else if (e.via === 'me') me += e.amt;
+      else un += e.amt;
+    }
     for (const j of real.filter(x => x.start_date?.startsWith(m))) {
-      const w = jobWages(j, stubsByJob);
-      if (w) { if (j.wages_status === 'paid') paidBucket(j.paid_via, w.amount); else if (isWrapped(j)) due += w.amount; }
-      const gi = gearInv(j);
-      if (gi) {
-        // Gear can be paid to a different recipient than wages.
-        if (gi.paidAmt) paidBucket(j.gear_paid_via || j.paid_via, gi.paidAmt);
-        due += gi.dueAmt;
-      } else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
-        if (j.gear_status === 'paid') paidBucket(j.gear_paid_via || j.paid_via, j.gear_total);
-        else if (isWrapped(j)) due += j.gear_total;
-      }
+      const o = owedFor(j, stubsByJob);
+      due += o.wages + o.gear;
     }
     return { label: d.toLocaleString('en-US', { month: 'long' }), me, co, un, due };
   });
@@ -1008,6 +999,67 @@ function wageCoverage(job, stubs) {
   return { jobDays: jobDaysList, paid, unpaid, tracked };
 }
 
+// Every paid dollar, dated when it was PAID: each check's wage and gear
+// parts land in its check-date month (paid to whoever the check names).
+// Jobs marked paid without any check on file fall back to the job's start
+// month and its estimate / stated gear total. Partially paid jobs count
+// exactly what their checks paid so far.
+function paidEvents(jobs, stubsByJob) {
+  const ev = [];
+  for (const j of jobs) {
+    if (j.deleted || j.job_status === 'hold') continue;
+    const jm = (j.start_date || '').slice(0, 7);
+    let wagesFromChecks = 0, gearFromChecks = 0;
+    for (const s of stubsByJob[j.id] || []) {
+      if (s.gross === null || s.gross === undefined) continue;
+      const m = (s.check_date || j.start_date || '').slice(0, 7);
+      const g = gearOnStub(s.earnings);
+      const w = Math.max(0, s.gross - g);
+      if (w) { ev.push({ m, kind: 'wages', amt: w, via: s.paid_to || j.paid_via }); wagesFromChecks += w; }
+      if (g) { ev.push({ m, kind: 'gear', amt: g, via: s.paid_to || j.gear_paid_via || j.paid_via }); gearFromChecks += g; }
+    }
+    if (!wagesFromChecks && j.wages_status === 'paid') {
+      const w = jobWages(j, stubsByJob);
+      if (w) ev.push({ m: jm, kind: 'wages', amt: w.amount, via: j.paid_via });
+    }
+    if (!gearFromChecks) {
+      const gi = gearInv(j);
+      if (gi) {
+        for (const inv of j.gear_invoices.filter(i => i.status === 'paid')) {
+          ev.push({ m: (inv.end || inv.start || j.start_date || '').slice(0, 7), kind: 'gear', amt: inv.amount || 0, via: j.gear_paid_via || j.paid_via });
+        }
+      } else if (j.gear_status === 'paid' && j.gear_total) {
+        ev.push({ m: jm, kind: 'gear', amt: j.gear_total, via: j.gear_paid_via || j.paid_via });
+      }
+    }
+  }
+  return ev;
+}
+
+// What a job still owes. Weekly-paid jobs (checks record their days): the
+// day rate x worked days to date that no check covered. Otherwise only
+// once wrapped: the estimate, or the stated gear total minus gear checks.
+function owedFor(j, stubsByJob) {
+  const out = { wages: 0, gear: 0 };
+  if (j.deleted || j.job_status === 'hold') return out;
+  const ss = stubsByJob[j.id] || [];
+  if (j.wages_status !== 'paid') {
+    const cov = wageCoverage(j, ss);
+    if (cov.tracked) out.wages = (j.rate_amount || 0) * cov.unpaid.filter(d => d <= today()).length;
+    else if (isWrapped(j)) {
+      const w = jobWages(j, stubsByJob);
+      if (w && !w.actual) out.wages = w.amount;   // actual = already-paid money, not owed
+    }
+  }
+  const gi = gearInv(j);
+  if (gi) out.gear = gi.dueAmt;
+  else if (j.gear_status !== 'na' && j.gear_status !== 'paid' && j.gear_total && isWrapped(j)) {
+    const got = ss.reduce((s, st) => s + gearOnStub(st.earnings), 0);
+    out.gear = Math.max(0, j.gear_total - got);
+  }
+  return out;
+}
+
 // The base (straight-time) hourly rate on a stub: the REG/straight line's
 // rate, else the lowest hourly rate found.
 function baseRateOf(p) {
@@ -1032,17 +1084,23 @@ function totalsCard(jobsAll, stubsByJob) {
     if (w) {
       row.wages += w.amount;
       if (!w.actual) estimated++;
-      if (j.wages_status === 'paid') acc.wagesPaid += w.amount; else if (isWrapped(j)) acc.wagesDue += w.amount;
+      // A weekly-paid job part-way through: add the days still to come.
+      const cov = wageCoverage(j, stubsByJob[j.id]);
+      if (w.actual && cov.tracked && cov.unpaid.length && j.rate_amount) {
+        row.wages += j.rate_amount * cov.unpaid.length;
+        estimated++;
+      }
     } else noAmount++;
     const gi = gearInv(j);
-    if (gi) {
-      row.gear += gi.total;
-      acc.gearPaid += gi.paidAmt;
-      acc.gearDue += gi.dueAmt;
-    } else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) {
-      row.gear += j.gear_total;
-      if (j.gear_status === 'paid') acc.gearPaid += j.gear_total; else if (isWrapped(j)) acc.gearDue += j.gear_total;
-    }
+    if (gi) row.gear += gi.total;
+    else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) row.gear += j.gear_total;
+    const o = owedFor(j, stubsByJob);
+    acc.wagesDue += o.wages;
+    acc.gearDue += o.gear;
+  }
+  // Paid totals = money actually received this year, by payment date.
+  for (const e of paidEvents(jobs, stubsByJob).filter(x => x.m.startsWith(String(totalsYear)))) {
+    if (e.kind === 'wages') acc.wagesPaid += e.amt; else acc.gearPaid += e.amt;
   }
   const monthKeys = Object.keys(months).sort();
   const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'short' });
@@ -2181,7 +2239,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v96';
+const APP_VERSION = 'v97';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
