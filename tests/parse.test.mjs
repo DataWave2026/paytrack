@@ -821,7 +821,7 @@ FSO: JANE M DOE`;
   assert.equal(p.period_end, '2026-10-03');
   assert.equal(p.day_count, 2);                       // Tax / Work Days: 5 / 2
   assert.equal(p.job_title, 'DIGITAL IMAGING TECHNICIAN');
-  assert.equal(p.memo, 'Ref 00117929 · Inv ABC119');
+  assert.equal(p.memo, '');                           // EP billing ref is not his invoice
   assert.deepEqual(p.earnings.map(e => [e.type, e.hours, e.amount]),
     [['Straight time', 16, 1236.37], ['Overtime', 6, 695.45], ['Per diem', null, 100]]);
   assert.equal(p.gross, 2031.82);

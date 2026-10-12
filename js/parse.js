@@ -564,9 +564,8 @@ function parseEP(text) {
 
   const occ = after(/^occupation\s+title:?/i);
   if (occ) p.job_title = occ;
-  const ref = after(/^ref\s*\/\s*inv:?/i);
-  const rm = ref.match(/(\S+)\s*\/\s*(\S+)/);
-  if (rm) p.memo = `Ref ${rm[1]} · Inv ${rm[2]}`;
+  // EP's "Ref / Inv" box is EP's own billing reference to the production,
+  // not the worker's invoice — deliberately NOT copied into the memo.
 
   // Anything EP-specific logic missed falls through to the generic reader.
   return parseGenericInto(p, text);
