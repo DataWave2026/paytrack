@@ -379,7 +379,9 @@ function addDaysStr(iso, n) {
 
 // Mini-calendar of tappable day chips for a date range. Returns the number
 // of days rendered (0/1 = no picker needed).
-function fillDayChips(box, start, end, sel, counter, travelSel) {
+// `paidSet` (optional): days a wage check has already paid — drawn solid
+// with a $ mark, still tappable like any other day.
+function fillDayChips(box, start, end, sel, counter, travelSel, paidSet) {
   box.replaceChildren();
   if (!start) return 0;
   const days = [];
@@ -390,8 +392,10 @@ function fillDayChips(box, start, end, sel, counter, travelSel) {
   const upd = () => {
     if (!counter) return;
     const t = travelSel ? [...travelSel].filter(x => sel.has(x)).length : 0;
+    const pd = paidSet ? days.filter(x => paidSet.has(x)).length : 0;
     counter.textContent = `${sel.size} day${sel.size === 1 ? '' : 's'} selected`
-      + (t ? ` (${t} travel)` : '');
+      + (t ? ` (${t} travel)` : '')
+      + (pd ? ` · ${pd} already paid ($)` : '');
   };
   const chip = (d) => {
     const dt = new Date(d + 'T00:00:00');
@@ -407,7 +411,9 @@ function fillDayChips(box, start, end, sel, counter, travelSel) {
     };
     const b = h('button', {
       type: 'button',
-      class: 'daychip' + (sel.has(d) ? ' on' : '') + (travelSel?.has(d) ? ' travel' : ''),
+      class: 'daychip' + (sel.has(d) ? ' on' : '') + (travelSel?.has(d) ? ' travel' : '')
+        + (paidSet?.has(d) ? ' paid' : ''),
+      title: paidSet?.has(d) ? 'Paid by a check' : null,
       onclick: () => {
         if (lpFired) { lpFired = false; return; }   // long-press already handled
         if (sel.has(d)) {
@@ -433,7 +439,8 @@ function fillDayChips(box, start, end, sel, counter, travelSel) {
       onpointerup: () => clearTimeout(lpTimer),
       onpointerleave: () => clearTimeout(lpTimer),
       onpointercancel: () => clearTimeout(lpTimer),
-    }, h('span', { class: 'dom' }, String(dt.getDate())));
+    }, h('span', { class: 'dom' }, String(dt.getDate())),
+      paidSet?.has(d) ? h('span', { class: 'paidmark' }, '$') : null);
     return b;
   };
   // Real calendar layout: one Sun-Sat grid per month, header row, days in
@@ -530,15 +537,20 @@ async function editJob(existing, prefill) {
 
   const workSel = new Set(job.work_dates || []);
   const travelSel = new Set(job.travel_dates || []);
+  // Days already paid by this job's wage checks — marked on the calendar.
+  const paidDays = existing
+    ? wageCoverage(job, (await store.allStubs()).filter(s => s.matched_job_id === job.id)).paid
+    : new Set();
   const workBox = h('div', { class: 'daychips' });
   const workCounter = h('p', { class: 'muted small' }, '');
   const workWrap = h('div', {},
     h('label', {}, 'Which days were actually worked? (only these get calendar events)'),
     workBox, workCounter,
     h('p', { class: 'muted small' },
-      'Right-click a day (press and hold on phone) to mark it as a travel day — estimated at the 4-hour minimum until the stub arrives.'));
+      (paidDays.size ? 'Solid with $ = paid by a check. ' : '')
+      + 'Right-click a day (press and hold on phone) to mark it as a travel day — estimated at the 4-hour minimum until the stub arrives.'));
   const updateWorkChips = () => {
-    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel);
+    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel, paidDays);
     workWrap.style.display = n > 1 ? '' : 'none';
   };
 
@@ -1417,6 +1429,10 @@ function confirmStubForm(parsed, uploaded, ocrText) {
 }
 
 async function pickMatch(p, uploaded, ocrText) {
+  // Other checks already on file — their paid days show on the day picker.
+  // (A re-scan of this same check is excluded, so its own days aren't "paid".)
+  const stubsOnFile = (await store.allStubs())
+    .filter(s => !(p.check_no && s.check_no === p.check_no));
   window.__pickMatchOpen = true;   // dev/testing hook marker
   const jobsList = await store.allJobs();
   const stubGear = gearOnStub(p.earnings);
@@ -1511,9 +1527,14 @@ async function pickMatch(p, uploaded, ocrText) {
     if (id === pickedFor) return;   // keep the user's taps across redraws
     pickedFor = id;
     daySel.clear();
+    const paid = chosen
+      ? wageCoverage(chosen, stubsOnFile.filter(s => s.matched_job_id === chosen.id)).paid
+      : null;
     if (chosen) {
+      // Preselect the job's days in this period that no other check paid.
       const wd = new Set(chosen.work_dates || []);
       for (const d of periodDays) {
+        if (paid.has(d)) continue;
         if (wd.size ? wd.has(d) : (d >= chosen.start_date && d <= (chosen.end_date || chosen.start_date))) daySel.add(d);
       }
     } else if (p.day_count && p.day_count === periodDays.length) {
@@ -1521,7 +1542,7 @@ async function pickMatch(p, uploaded, ocrText) {
     }
     dayLabel.textContent = (chosen ? 'Which days does this check cover?' : 'Days actually worked')
       + (p.day_count ? ` — stub says ${p.day_count}` : '');
-    fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter);
+    fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter, null, paid);
   };
   const chipCount = periodDays.length;
   const dayWrap = h('div', { class: 'mt' }, dayLabel, dayBox, dayCounter,
@@ -2160,7 +2181,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v95';
+const APP_VERSION = 'v96';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
