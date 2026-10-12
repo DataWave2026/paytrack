@@ -19,6 +19,10 @@ export function parseDate(s) {
   }
   m = s.match(/(\d{4})-(\d{2})-(\d{2})/);                               // 2026-08-25
   if (m) return m[0];
+  m = s.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/);                     // 09/27/26 (EP)
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+    return `20${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
   return '';
 }
 
@@ -467,10 +471,106 @@ const VENDORS = [
   // Cast & Crew / Entertainment Partners / GreenSlate templates get added
   // here as real stubs from those vendors arrive; generic covers them until then.
   { re: /cast\s*&?\s*crew|castandcrew|new\s+caps,?\s+llc/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Cast & Crew' }, t) },
-  { re: /entertainment\s+partners|\bEP\s+payroll/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Entertainment Partners' }, t) },
+  { re: /entertainment\s+partners|\bEP\s+payroll|www\.ep\.com/i, fn: parseEP },
   { re: /greenslate/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'GreenSlate' }, t) },
   { re: /media\s+services/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Media Services' }, t) },
 ];
+
+// ---- Entertainment Partners (digital PDF stubs) ----
+// Layout quirks: label/value blocks are stacked (the check number prints
+// ABOVE "Check No:"), dates use 2-digit years, the earnings table emits each
+// row as type line then rate/hours/amount lines, and loan-outs are marked
+// "<COMPANY> ... FSO: <LAST/FIRST>" ("for services of").
+function parseEP(text) {
+  const p = blankParse();
+  p.vendor = 'Entertainment Partners';
+  const ls = lines(text);
+  const after = (re) => {
+    const i = ls.findIndex(l => re.test(l));
+    if (i < 0) return '';
+    const tail = ls[i].replace(re, '').trim();
+    return tail || ls[i + 1] || '';
+  };
+
+  const pm = text.match(/prod(?:uction)?\s+title:\s*([^\r\n]+)/i);
+  if (pm) p.project_name = pm[1].trim();
+  const cm = text.match(/client:\s*([^\r\n]+)/i);
+  if (cm) p.employer = cm[1].replace(/,.*$/, '').trim();
+  const pay = text.match(/^\W*(entertainment\s+partners[^\r\n]*?\b(?:llc|inc)\b\.?)/im);
+  p.payroll_employer = pay ? pay[1].trim() : 'Entertainment Partners';
+
+  // Payee: the company line carrying FSO = paid to the loan-out; a bare name
+  // with no FSO = paid to the person.
+  const fsoLine = ls.find(l => /\bFSO:/i.test(l));
+  if (fsoLine) {
+    p.payee = fsoLine.replace(/\s*(tax\s+id|fso)\b.*$/i, '').trim();
+    p.classification = 'Loan Out';
+    p.paid_to = 'company';
+  } else {
+    const adv = text.match(/advice:\s*([^\r\n]+)/i);
+    if (adv) p.payee = adv[1].trim();
+  }
+
+  // Check number: digits on the line just above or below its label.
+  const ci = ls.findIndex(l => /^check\s+no:?$/i.test(l));
+  if (ci >= 0) {
+    const near = [ls[ci - 1], ls[ci + 1], ls[ci + 2]].find(l => /^\d{5,12}$/.test(l || ''));
+    if (near) p.check_no = near;
+  }
+  p.check_date = parseDate(after(/^check\s+date:?/i)) || '';
+
+  const per = text.match(/start:\s*(\S+)\s+end:\s*(\S+)/i);
+  if (per) { p.period_start = parseDate(per[1]); p.period_end = parseDate(per[2]); }
+  // "Tax / Work Days: 5 / 2" — the second number is days actually worked.
+  const wd = text.match(/tax\s*\/\s*work\s+days:?\s*(\d+)\s*\/\s*(\d+)/i);
+  if (wd) p.day_count = parseInt(wd[2], 10);
+
+  // Earnings: rows between the "Desc Hours Amount" header and Union/
+  // Occupation. A row = a letters-only type line, then up to three numbers:
+  // rate, hours, amount (or hours, amount; or just amount).
+  const si = ls.findIndex(l => /^desc\s+hours\s+amount/i.test(l));
+  if (si >= 0) {
+    let cur = null;
+    const flush = () => {
+      if (!cur) return;
+      const n = cur.nums;
+      const e = { type: cur.type, hours: null, rate: null, amount: null };
+      if (n.length >= 3) { e.rate = n[0]; e.hours = n[1]; e.amount = n[2]; }
+      else if (n.length === 2) { e.hours = n[0]; e.amount = n[1]; }
+      else if (n.length === 1) e.amount = n[0];
+      if (e.amount !== null) p.earnings.push(e);
+      cur = null;
+    };
+    for (const l of ls.slice(si + 1)) {
+      if (/^(union|occupation|taxes|totals)\b/i.test(l)) break;
+      if (/^rate:/i.test(l)) continue;
+      if (/^[\d,]+(\.\d+)?$/.test(l)) { if (cur) cur.nums.push(parseFloat(l.replace(/,/g, ''))); continue; }
+      if (/[A-Za-z]/.test(l)) { flush(); cur = { type: l, nums: [] }; }
+    }
+    flush();
+  }
+  // Friendly names for EP's terse earning codes.
+  const CODES = { 'REG': 'Straight time', 'O.T.': 'Overtime', 'OT': 'Overtime', 'DT': 'Double time', 'DIEM': 'Per diem', 'MP': 'Meal penalty' };
+  for (const e of p.earnings) e.type = CODES[e.type.toUpperCase()] || e.type;
+  p.hourly_rates = [...new Set(p.earnings.map(e => e.rate).filter(Boolean))].sort((a, b) => a - b);
+  const hrs = p.earnings.reduce((s, e) => s + (e.hours || 0), 0);
+  if (hrs) p.hours = hrs;
+  const sum = p.earnings.reduce((s, e) => s + (e.amount || 0), 0);
+  if (sum) p.gross = Math.round(sum * 100) / 100;
+  // Net = the direct-deposit line ("DIRDP1 2,031.82").
+  const dd = text.match(/DIRDP\d*\s+([\d,]+\.\d{2})/i);
+  if (dd) p.net = parseMoney(dd[1]);
+  if (p.gross !== null && p.net !== null) p.total_deductions = Math.round((p.gross - p.net) * 100) / 100;
+
+  const occ = after(/^occupation\s+title:?/i);
+  if (occ) p.job_title = occ;
+  const ref = after(/^ref\s*\/\s*inv:?/i);
+  const rm = ref.match(/(\S+)\s*\/\s*(\S+)/);
+  if (rm) p.memo = `Ref ${rm[1]} · Inv ${rm[2]}`;
+
+  // Anything EP-specific logic missed falls through to the generic reader.
+  return parseGenericInto(p, text);
+}
 
 // ---- Printed / e-checks (Deluxe eChecks etc.) ----
 // A payment document, not an itemized stub: "PAY TO THE ORDER OF", one

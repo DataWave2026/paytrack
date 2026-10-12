@@ -1176,7 +1176,8 @@ async function runStubPipeline(file) {
     if (settings().keepScans) {
       try {
         setStage('Archiving photo to your Drive…');
-        const nm = `${new Date().toISOString().slice(0, 10)} ${(file.name || 'scan').replace(/\.\w+$/, '')}.jpg`;
+        const ext = img.type === 'application/pdf' ? 'pdf' : 'jpg';
+        const nm = `${new Date().toISOString().slice(0, 10)} ${(file.name || 'scan').replace(/\.\w+$/, '')}.${ext}`;
         parsed.drive_file_id = await g.uploadScan(img, nm, text);
         parsed.photo_name = nm;
         log('scanKept', { id: parsed.drive_file_id, name: nm });
@@ -1186,7 +1187,7 @@ async function runStubPipeline(file) {
         if (file.type !== 'application/pdf') {
           captureLayout(img)
             .then(json => g.uploadScan(new Blob([json], { type: 'application/json' }),
-              nm.replace(/\.jpg$/, '.layout.json')))
+              nm.replace(/\.\w+$/, '.layout.json')))
             .then(() => log('layoutKept', { name: nm }))
             .catch(e => log('layoutErr', { msg: String(e.message).slice(0, 150) }));
         }
@@ -2046,7 +2047,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v91';
+const APP_VERSION = 'v92';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

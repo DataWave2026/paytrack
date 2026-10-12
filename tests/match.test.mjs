@@ -121,3 +121,14 @@ test('a check far outside payment terms does not date-match', () => {
   const m = matchStub(stub, withGear);
   assert.ok(m.length === 0 || m[0].score < 30);
 });
+
+test('show title matches a job logged by its acronym', async () => {
+  const { acronym } = await import('../js/match.js');
+  assert.equal(acronym('AGE OF ATTRACTION - SEASON 2'), 'aoa2');
+  const js = [{ id: 'a', project: 'AoA2', start_date: '2026-12-01', end_date: '2026-12-02' },
+    { id: 'b', project: 'Other Show', start_date: '2026-12-01', end_date: '2026-12-02' }];
+  const m = matchStub({ project_name: 'AGE OF ATTRACTION - SEASON 2',
+    period_start: '2026-12-01', period_end: '2026-12-02', hourly_rates: [] }, js);
+  assert.equal(m[0].job.id, 'a');
+  assert.ok(m[0].reasons.includes('name matches'));
+});
