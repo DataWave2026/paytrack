@@ -248,3 +248,8 @@ table.tot th:first-child, table.tot td:first-child { text-align: left; }
 table.tot tr.sum td { font-weight: 700; border-bottom: none; }
 .spinner { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Home owed figures open the owed breakdown */
+.stat.clicky { cursor: pointer; border-radius: 10px; transition: background .15s; }
+.stat.clicky:hover { background: var(--panel2); }
+a.owedlink { color: inherit; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }

@@ -185,7 +185,7 @@ async function home() {
       const o = owedFor(j, stubsByJob);
       due += o.wages + o.gear;
     }
-    return { label: d.toLocaleString('en-US', { month: 'long' }), me, co, un, due };
+    return { label: d.toLocaleString('en-US', { month: 'long' }), m, me, co, un, due };
   });
   const unattributed = last3.reduce((s, r) => s + r.un, 0);
 
@@ -200,13 +200,13 @@ async function home() {
     h('div', { class: 'card' },
       h('h2', {}, 'Outstanding'),
       h('div', { class: 'stat-row' },
-        h('div', { class: 'stat ' + wagesTone },
+        h('div', { class: 'stat clicky ' + wagesTone, onclick: () => showOwed() },
           h('div', { class: 'num' }, String(unpaidWages.length)),
           h('div', { class: 'lbl' }, lateWages ? 'jobs awaiting wages (late)' : 'jobs awaiting wages')),
-        h('div', { class: 'stat ' + gearTone },
+        h('div', { class: 'stat clicky ' + gearTone, onclick: () => showOwed() },
           h('div', { class: 'num' }, fmt$(gearOut || 0)),
           h('div', { class: 'lbl' }, lateGear ? 'gear outstanding (late)' : 'gear outstanding')),
-        h('div', { class: 'stat ' + (unpaidWages.length ? wagesTone : '') },
+        h('div', { class: 'stat clicky ' + (unpaidWages.length ? wagesTone : ''), onclick: () => showOwed() },
           h('div', { class: 'num' }, wagesOut ? '~' + fmt$(wagesOut) : '—'),
           h('div', { class: 'lbl' }, 'est. wages owed'))),
     ),
@@ -218,7 +218,8 @@ async function home() {
           h('td', {}, r.label),
           h('td', {}, r.me ? fmt$(r.me) : '—'),
           h('td', {}, r.co ? fmt$(r.co) : '—'),
-          h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' }, r.due ? fmt$(r.due) : '—')))),
+          h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' },
+            r.due ? h('a', { href: '#', class: 'owedlink', onclick: (e) => { e.preventDefault(); showOwed(r.m); } }, fmt$(r.due)) : '—')))),
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     totalsCard(jobs, stubsByJob),
@@ -1041,6 +1042,89 @@ function paidEvents(jobs, stubsByJob) {
     }
   }
   return ev;
+}
+
+// Plain-language explanation of what a job owes and why (owed screen).
+function owedDetail(j, stubsByJob) {
+  const ss = stubsByJob[j.id] || [];
+  const o = owedFor(j, stubsByJob);
+  const due = sync.jobDueDates(j);
+  const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+  const listDays = (ds) => ds.length <= 8 ? ds.map(md).join(', ')
+    : `${ds.slice(0, 8).map(md).join(', ')} +${ds.length - 8} more`;
+  const checks = ss.filter(st => (st.gross || 0) - gearOnStub(st.earnings) > 0).length;
+  const lines = [];
+  let late = false;
+  if (j.wages_status !== 'paid' && (o.wages > 0 || isWrapped(j))) {
+    const cov = wageCoverage(j, ss);
+    if (cov.tracked) {
+      const past = cov.unpaid.filter(d => d <= today());
+      const later = cov.unpaid.length - past.length;
+      if (past.length) {
+        lines.push(`Wages: ${past.length} worked day${past.length === 1 ? '' : 's'} no check has covered yet (${listDays(past)}) × ${fmt$(j.rate_amount)}/day = ${fmt$(o.wages)}.`);
+      }
+      lines.push(`Paid so far: ${cov.paid.size} of ${cov.jobDays.length} days, by ${checks} check${checks === 1 ? '' : 's'}.`
+        + (later ? ` ${later} later day${later === 1 ? '' : 's'} not worked yet (not counted as owed).` : ''));
+    } else if (o.wages > 0) {
+      const days = jobDays(j);
+      lines.push(`Wages: job wrapped ${md(j.end_date || j.start_date)} and no check is on file yet. Estimate: ${days} day${days === 1 ? '' : 's'} × ${fmt$(j.rate_amount)}/day = ${fmt$(o.wages)}.`);
+    } else if (checks) {
+      lines.push('Wages: partly paid, but the checks on file don\'t record which days they covered — open the job to check what\'s left.');
+    } else {
+      lines.push('Wages: not marked paid, but the amount is unknown (no day rate on the job) — open it to add one.');
+    }
+    if (due.wages) {
+      late = late || due.wages < today();
+      lines.push(`Expected by ${md(due.wages)}${due.wages < today() ? ' — LATE' : ''}.`);
+    }
+  }
+  if (o.gear > 0) {
+    const gi = gearInv(j);
+    if (gi) {
+      for (const inv of gi.dueNow) {
+        lines.push(`Gear: week ${md(inv.start || inv.end)}–${md(inv.end || inv.start)} invoice ${fmt$(inv.amount)} (${inv.status === 'sent' ? 'invoice sent' : 'invoice NOT sent'}), not paid yet.`);
+      }
+    } else {
+      const got = ss.reduce((a, st) => a + gearOnStub(st.earnings), 0);
+      lines.push(`Gear: ${fmt$(j.gear_total)} stated for this job${got ? `, ${fmt$(got)} received so far` : ', nothing received yet'} → ${fmt$(o.gear)} owed.`);
+    }
+    if (due.gear) {
+      late = late || due.gear < today();
+      lines.push(`Gear expected by ${md(due.gear)}${due.gear < today() ? ' — LATE' : ''}.`);
+    }
+  }
+  return { owed: o, total: o.wages + o.gear, lines, late };
+}
+
+// The owed screen: every job that owes money (optionally one month's), the
+// amount, and why. Opened from the Home owed figures.
+async function showOwed(month) {
+  const jobsAll = (await store.allJobs()).filter(j => j.job_status !== 'hold');
+  const stubsByJob = {};
+  for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
+  const owing = jobsAll
+    .filter(j => !month || (j.start_date || '').startsWith(month))
+    .map(j => ({ j, d: owedDetail(j, stubsByJob) }))
+    .filter(x => x.d.lines.length)
+    .sort((a, b) => (b.d.late - a.d.late) || (b.d.total - a.d.total));
+  const total = owing.reduce((a, x) => a + x.d.total, 0);
+  const label = month
+    ? new Date(month + '-02T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' })
+    : 'All jobs';
+  viewEl.replaceChildren(h('div', { class: 'card' },
+    h('h2', {}, `Owed — ${label}`),
+    h('p', { class: 'muted small', style: 'margin-top:0' },
+      owing.length ? `${fmt$(total)} across ${owing.length} job${owing.length === 1 ? '' : 's'}. Estimates use the job's day rate until a check arrives.`
+        : 'Nothing owed.'),
+    owing.map(({ j, d }) => h('div', { class: 'job', style: 'display:block', onclick: () => render('jobs').then(() => editJob(j)) },
+      h('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
+        h('div', { class: 'title' }, j.project || '(untitled)'),
+        h('div', { class: 'title', style: `white-space:nowrap;${d.late ? 'color:var(--bad)' : ''}` },
+          d.total ? `~${fmt$(d.total)}` : '?')),
+      h('div', { class: 'sub' }, fmtRange(j.start_date, j.end_date)),
+      d.lines.map(l => h('div', { class: 'sub', style: `margin-top:4px;${/LATE/.test(l) ? 'color:var(--bad)' : ''}` }, l)))),
+    h('button', { class: 'secondary', onclick: () => render('home') }, '← Back')));
+  viewEl.scrollTop = 0;
 }
 
 // What a job still owes. Weekly-paid jobs (checks record their days): the
@@ -2247,7 +2331,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v100';
+const APP_VERSION = 'v101';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
