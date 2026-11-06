@@ -5,6 +5,8 @@ import * as g from './google.js';
 import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub, matchDebug } from './match.js';
+import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
+  gearReceived, owedFor, paidEvents, applyGearPayment, baseRateOf } from './money.js';
 import { log, dump, clearLog } from './log.js';
 
 window.addEventListener('error', (e) =>
@@ -46,6 +48,13 @@ const fmt$ = (n) => {
   return '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
     ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
+// Never masked by the privacy eye — for text that is SAVED (job notes end up
+// on the calendar); fmt$ there would store a literal "$•••".
+const fmtRaw$ = (n) => {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  return '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
+    ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 const today = store.today;   // LOCAL date (UTC rolled over at ~4pm Pacific)
 
 function fmtRange(a, b, alwaysYear = false) {
@@ -59,37 +68,12 @@ function fmtRange(a, b, alwaysYear = false) {
   return !b || b === a ? f(a) : `${f(a)} – ${f(b)}`;
 }
 
-function jobDays(job) {
-  if (job.days_worked) return job.days_worked;
-  if (!job.start_date) return 1;
-  const d = Math.round((new Date(job.end_date || job.start_date) - new Date(job.start_date)) / 86400000) + 1;
-  return Math.max(1, d);
-}
 
-// Weekly gear billing: a job can carry one invoice per billed week, each with
-// its own sent/paid state. Returns null when the job doesn't bill weekly.
-function gearInv(job) {
-  const inv = Array.isArray(job.gear_invoices) ? job.gear_invoices : [];
-  if (!inv.length) return null;
-  const sum = a => a.reduce((s, i) => s + (i.amount || 0), 0);
-  const paid = inv.filter(i => i.status === 'paid');
-  const unsent = inv.filter(i => i.status === 'unsent');
-  // A week's money is due once that week has ended — no waiting for wrap.
-  const dueNow = inv.filter(i => i.status !== 'paid' && (i.end || i.start || '9999-99-99') <= today());
-  return { n: inv.length, nPaid: paid.length, nUnsent: unsent.length,
-    total: sum(inv), paidAmt: sum(paid), dueAmt: sum(dueNow), dueNow };
-}
 
 function isOverdue(job) {
   return Object.values(sync.jobDueDates(job)).some(d => d < today());
 }
 
-// Money is only OWED once the work has happened — a future-dated job's
-// unpaid amounts don't count until its last day has passed.
-function isWrapped(j) {
-  const d = j.end_date || j.start_date;
-  return !d || d <= today();
-}
 
 // ---------- views ----------
 let currentView = 'home';
@@ -136,11 +120,7 @@ async function home() {
   // days to date that no check has covered yet.
   const unpaidWages = real.filter(j => j.wages_status !== 'paid'
     && (isWrapped(j) || owedFor(j, stubsByJob).wages > 0));
-  const unpaidGear = real.filter(j => {
-    const gi = gearInv(j);
-    if (gi) return gi.dueAmt > 0;   // weekly billing: due as each week ends
-    return isWrapped(j) && j.gear_status !== 'paid' && j.gear_status !== 'na';
-  });
+  const unpaidGear = real.filter(j => owedFor(j, stubsByJob).gear > 0);
   const overdue = jobs.filter(isOverdue);
   // Upcoming = future or in-progress jobs, plus EVERY unresolved hold (even
   // past-dated ones — a hold stays visible until confirmed or removed, so it
@@ -151,10 +131,7 @@ async function home() {
   // Recent = completed work only: wrapped on or before today, never holds or
   // future bookings (those live in Upcoming).
   const recent = real.filter(j => (j.end_date || j.start_date) && (j.end_date || j.start_date) <= today());
-  const gearOut = unpaidGear.reduce((s, j) => {
-    const gi = gearInv(j);
-    return s + (gi ? gi.dueAmt : (j.gear_total || 0));
-  }, 0);
+  const gearOut = unpaidGear.reduce((s, j) => s + owedFor(j, stubsByJob).gear, 0);
   const wagesOut = unpaidWages.reduce((s, j) => s + owedFor(j, stubsByJob).wages, 0);
   // Red only when actually LATE (past the wages 14d / gear 30d timers, or a
   // job's own expected date); yellow = unpaid but still within terms.
@@ -467,6 +444,8 @@ function sumJobs(list, stubsByJob) {
     if (j.job_status === 'hold') continue;
     const w = jobWages(j, stubsByJob);
     if (w) { wages += w.amount; if (!w.actual) est = true; }
+    const rem = wagesRemaining(j, stubsByJob[j.id]);
+    if (rem) { wages += rem; est = true; }
     if (j.gear_total) gear += j.gear_total;
   }
   return { wages, gear, total: wages + gear, est };
@@ -833,9 +812,8 @@ async function editJob(existing, prefill) {
     const cov = wageCoverage(job, stubs);
     // Weekly-paid jobs: once checks track their days, estimate only the
     // days no check has paid yet.
-    const remaining = cov.tracked && cov.unpaid.length && job.rate_amount
-      ? job.rate_amount * cov.unpaid.length : null;
-    const est = !wagesActual && job.rate_amount ? job.rate_amount * jobDays(job) : null;
+    const remaining = wagesRemaining(job, stubs) || null;
+    const est = !wagesActual ? estWages(job) : null;
     const wages = wagesActual || est || 0;
     const total = wages + (remaining || 0) + (job.gear_total || 0);
     // Pay summary across all checks: hours (and OT share) and the base rate.
@@ -852,7 +830,7 @@ async function editJob(existing, prefill) {
     const summary = [
       hrsAll ? `${Math.round(hrsAll * 100) / 100} hrs on checks${hrsOT ? ` (${Math.round(hrsOT * 100) / 100} OT)` : ''}` : '',
       baseRates.length ? `base rate ${baseRates.map(rate$).join(' / ')}/hr` : '',
-      cov.tracked ? `paid days ${cov.paid.size} of ${cov.jobDays.length}` : '',
+      cov.tracked ? `paid days ${cov.paidOnJob} of ${cov.total}` : '',
     ].filter(Boolean).join(' · ');
     if (rows.length || total) {
       breakdown = h('div', { class: 'card' },
@@ -873,9 +851,9 @@ async function editJob(existing, prefill) {
           r.dedItems.length ? h('div', { class: 'sub', style: 'opacity:.8' },
             r.dedItems.map(d => `${d.type} ${fmt$(d.amount)}`).join(' · ')) : null)),
         h('table', { class: 'tot', style: 'margin-top:8px' },
-          h('tr', {}, h('td', {}, `Wages${wagesActual ? (remaining ? ' paid so far' : '') : est ? ' (est. rate × days)' : ''}`),
+          h('tr', {}, h('td', {}, `Wages${wagesActual ? (remaining ? ' paid so far' : '') : est ? ' (estimate)' : ''}`),
             h('td', {}, `${wagesActual ? '' : est ? '~' : ''}${fmt$(wages || null)}`)),
-          remaining ? h('tr', {}, h('td', {}, `Still to come (${cov.unpaid.length} days × day rate)`),
+          remaining ? h('tr', {}, h('td', {}, `Still to come (${cov.unpaid.length} day${cov.unpaid.length === 1 ? '' : 's'}, estimated)`),
             h('td', {}, `~${fmt$(remaining)}`)) : null,
           h('tr', {}, h('td', {}, `Gear (${job.gear_status})`), h('td', {}, fmt$(job.gear_total))),
           h('tr', { class: 'sum' }, h('td', {}, 'TOTAL'),
@@ -962,84 +940,8 @@ const openMonths = new Set([new Date().toISOString().slice(0, 7)]);
 const openYears = new Set([String(new Date().getFullYear())]);
 
 // Actual stub gross when paystubs are matched to the job; rate × days otherwise.
-function jobWages(job, stubsByJob) {
-  // A stub's WAGE contribution is its gross minus its gear lines — gear money
-  // is tracked via gear_total and must never be double-counted as wages.
-  // A gear-only stub therefore contributes nothing here.
-  let sum = 0, any = false;
-  for (const s of stubsByJob[job.id] || []) {
-    if (s.gross === null || s.gross === undefined) continue;
-    const wagePart = Math.max(0, s.gross - gearOnStub(s.earnings));
-    if (wagePart > 0) { sum += wagePart; any = true; }
-  }
-  if (any) return { amount: sum, actual: true };
-  if (job.rate_amount) {
-    // Travel days guarantee a 4-hour minimum, not a full day.
-    const travel = Math.min((job.travel_dates || []).length, jobDays(job));
-    const full = jobDays(job) - travel;
-    const hourly = job.rate_hourly || job.rate_amount / (job.rate_hours || 10);
-    return { amount: job.rate_amount * full + hourly * 4 * travel, actual: false };
-  }
-  return null;
-}
 
-// Which of a job's days its wage checks have paid. Checks record their
-// covered days (picked on the match screen); a long job paid weekly is
-// 'partial' until every day is covered. `tracked` is false when no check
-// recorded days (older records) — callers then keep the old behavior.
-function wageCoverage(job, stubs) {
-  let jobDaysList = [...(job.work_dates || [])];
-  if (!jobDaysList.length && job.start_date) {
-    for (let d = job.start_date; d <= (job.end_date || job.start_date) && jobDaysList.length < 120; d = addDaysStr(d, 1)) jobDaysList.push(d);
-  }
-  const paid = new Set();
-  let tracked = false;
-  for (const s of stubs || []) {
-    if (!(s.work_dates || []).length) continue;
-    if ((s.gross || 0) - gearOnStub(s.earnings) <= 0) continue;   // gear-only check
-    tracked = true;
-    for (const d of s.work_dates) paid.add(d);
-  }
-  const unpaid = jobDaysList.filter(d => !paid.has(d));
-  return { jobDays: jobDaysList, paid, unpaid, tracked };
-}
 
-// Every paid dollar, dated when it was PAID: each check's wage and gear
-// parts land in its check-date month (paid to whoever the check names).
-// Jobs marked paid without any check on file fall back to the job's start
-// month and its estimate / stated gear total. Partially paid jobs count
-// exactly what their checks paid so far.
-function paidEvents(jobs, stubsByJob) {
-  const ev = [];
-  for (const j of jobs) {
-    if (j.deleted || j.job_status === 'hold') continue;
-    const jm = (j.start_date || '').slice(0, 7);
-    let wagesFromChecks = 0, gearFromChecks = 0;
-    for (const s of stubsByJob[j.id] || []) {
-      if (s.gross === null || s.gross === undefined) continue;
-      const m = (s.check_date || j.start_date || '').slice(0, 7);
-      const g = gearOnStub(s.earnings);
-      const w = Math.max(0, s.gross - g);
-      if (w) { ev.push({ m, kind: 'wages', amt: w, via: s.paid_to || j.paid_via }); wagesFromChecks += w; }
-      if (g) { ev.push({ m, kind: 'gear', amt: g, via: s.paid_to || j.gear_paid_via || j.paid_via }); gearFromChecks += g; }
-    }
-    if (!wagesFromChecks && j.wages_status === 'paid') {
-      const w = jobWages(j, stubsByJob);
-      if (w) ev.push({ m: jm, kind: 'wages', amt: w.amount, via: j.paid_via });
-    }
-    if (!gearFromChecks) {
-      const gi = gearInv(j);
-      if (gi) {
-        for (const inv of j.gear_invoices.filter(i => i.status === 'paid')) {
-          ev.push({ m: (inv.end || inv.start || j.start_date || '').slice(0, 7), kind: 'gear', amt: inv.amount || 0, via: j.gear_paid_via || j.paid_via });
-        }
-      } else if (j.gear_status === 'paid' && j.gear_total) {
-        ev.push({ m: jm, kind: 'gear', amt: j.gear_total, via: j.gear_paid_via || j.paid_via });
-      }
-    }
-  }
-  return ev;
-}
 
 // Plain-language explanation of what a job owes and why (owed screen).
 function owedDetail(j, stubsByJob) {
@@ -1058,13 +960,24 @@ function owedDetail(j, stubsByJob) {
       const past = cov.unpaid.filter(d => d <= today());
       const later = cov.unpaid.length - past.length;
       if (past.length) {
-        lines.push(`Wages: ${past.length} worked day${past.length === 1 ? '' : 's'} no check has covered yet (${listDays(past)}) × ${fmt$(j.rate_amount)}/day = ${fmt$(o.wages)}.`);
+        const travel = past.filter(d => (j.travel_dates || []).includes(d)).length;
+        const how = !j.rate_amount ? 'no day rate on the job, so no amount'
+          : travel ? `${past.length - travel} at ${fmt$(j.rate_amount)}/day + ${travel} travel day${travel === 1 ? '' : 's'} at the 4-hour minimum = ${fmt$(o.wages)}`
+            : `× ${fmt$(j.rate_amount)}/day = ${fmt$(o.wages)}`;
+        lines.push(`Wages: ${past.length} worked day${past.length === 1 ? '' : 's'} no check has covered yet (${listDays(past)}) ${how}.`);
       }
-      lines.push(`Paid so far: ${cov.paid.size} of ${cov.jobDays.length} days, by ${checks} check${checks === 1 ? '' : 's'}.`
+      lines.push(`Paid so far: ${cov.paidOnJob} of ${cov.total} days, by ${checks} check${checks === 1 ? '' : 's'}.`
         + (later ? ` ${later} later day${later === 1 ? '' : 's'} not worked yet (not counted as owed).` : ''));
     } else if (o.wages > 0) {
       const days = jobDays(j);
-      lines.push(`Wages: job wrapped ${md(j.end_date || j.start_date)} and no check is on file yet. Estimate: ${days} day${days === 1 ? '' : 's'} × ${fmt$(j.rate_amount)}/day = ${fmt$(o.wages)}.`);
+      const est = estWages(j);
+      const w = jobWages(j, stubsByJob);
+      const got = w && w.actual ? w.amount : 0;
+      const travel = Math.min((j.travel_dates || []).length, days);
+      const basis = `${days} day${days === 1 ? '' : 's'} at ${fmt$(j.rate_amount)}/day${travel ? ` (${travel} travel at the 4-hour minimum)` : ''} = ${fmt$(est)}`;
+      lines.push(got
+        ? `Wages: estimate ${basis}; ${fmt$(got)} received on checks so far → ${fmt$(o.wages)} still owed.`
+        : `Wages: job wrapped ${md(j.end_date || j.start_date)} and no wage check is on file yet. Estimate: ${basis}.`);
     } else if (checks) {
       lines.push('Wages: partly paid, but the checks on file don\'t record which days they covered — open the job to check what\'s left.');
     } else {
@@ -1082,7 +995,7 @@ function owedDetail(j, stubsByJob) {
         lines.push(`Gear: week ${md(inv.start || inv.end)}–${md(inv.end || inv.start)} invoice ${fmt$(inv.amount)} (${inv.status === 'sent' ? 'invoice sent' : 'invoice NOT sent'}), not paid yet.`);
       }
     } else {
-      const got = ss.reduce((a, st) => a + gearOnStub(st.earnings), 0);
+      const got = gearReceived(ss);
       lines.push(`Gear: ${fmt$(j.gear_total)} stated for this job${got ? `, ${fmt$(got)} received so far` : ', nothing received yet'} → ${fmt$(o.gear)} owed.`);
     }
     if (due.gear) {
@@ -1124,37 +1037,7 @@ async function showOwed(month) {
   viewEl.scrollTop = 0;
 }
 
-// What a job still owes. Weekly-paid jobs (checks record their days): the
-// day rate x worked days to date that no check covered. Otherwise only
-// once wrapped: the estimate, or the stated gear total minus gear checks.
-function owedFor(j, stubsByJob) {
-  const out = { wages: 0, gear: 0 };
-  if (j.deleted || j.job_status === 'hold') return out;
-  const ss = stubsByJob[j.id] || [];
-  if (j.wages_status !== 'paid') {
-    const cov = wageCoverage(j, ss);
-    if (cov.tracked) out.wages = (j.rate_amount || 0) * cov.unpaid.filter(d => d <= today()).length;
-    else if (isWrapped(j)) {
-      const w = jobWages(j, stubsByJob);
-      if (w && !w.actual) out.wages = w.amount;   // actual = already-paid money, not owed
-    }
-  }
-  const gi = gearInv(j);
-  if (gi) out.gear = gi.dueAmt;
-  else if (j.gear_status !== 'na' && j.gear_status !== 'paid' && j.gear_total && isWrapped(j)) {
-    const got = ss.reduce((s, st) => s + gearOnStub(st.earnings), 0);
-    out.gear = Math.max(0, j.gear_total - got);
-  }
-  return out;
-}
 
-// The base (straight-time) hourly rate on a stub: the REG/straight line's
-// rate, else the lowest hourly rate found.
-function baseRateOf(p) {
-  const st = (p.earnings || []).find(e => /straight|^reg\b/i.test(e.type || '') && e.rate);
-  const r = st ? st.rate : (p.hourly_rates || []).filter(Boolean).sort((a, b) => a - b)[0];
-  return r ? Math.round(r * 100) / 100 : null;
-}
 
 // Year totals, rendered as a collapsible card on Home.
 function totalsCard(jobsAll, stubsByJob) {
@@ -1173,11 +1056,8 @@ function totalsCard(jobsAll, stubsByJob) {
       row.wages += w.amount;
       if (!w.actual) estimated++;
       // A weekly-paid job part-way through: add the days still to come.
-      const cov = wageCoverage(j, stubsByJob[j.id]);
-      if (w.actual && cov.tracked && cov.unpaid.length && j.rate_amount) {
-        row.wages += j.rate_amount * cov.unpaid.length;
-        estimated++;
-      }
+      const rem = w.actual ? wagesRemaining(j, stubsByJob[j.id]) : 0;
+      if (rem) { row.wages += rem; estimated++; }
     } else noAmount++;
     const gi = gearInv(j);
     if (gi) row.gear += gi.total;
@@ -1609,18 +1489,32 @@ async function pickMatch(p, uploaded, ocrText) {
   // check, recognize the split and preselect it.
   const checkTotal = gearOnly ? stubGear : (p.gross ?? stubGear ?? null);
   let split = false, chosen2 = null, amt1 = null, amt2 = null, amtEdited = false;
-  if (stubGear > 0) {
-    const singleHit = jobsList.some(j => !j.deleted && j.gear_total && Math.abs(j.gear_total - stubGear) <= 1);
+  // A check that was already split comes back as the same split.
+  const priorSplit = p.check_no
+    ? (await store.allStubs()).filter(st => st.check_no === p.check_no
+        && jobsList.some(j => j.id === st.matched_job_id))
+    : [];
+  if (new Set(priorSplit.map(st => st.matched_job_id)).size === 2) {
+    const [sa, sb] = priorSplit;
+    split = true;
+    chosen = jobsList.find(j => j.id === sa.matched_job_id);
+    chosen2 = jobsList.find(j => j.id === sb.matched_job_id);
+    amt1 = sa.gross; amt2 = sb.gross; amtEdited = true;
+  } else if (gearOnly) {
+    // Auto-detect only for pure gear checks, and only among the jobs that
+    // already look like matches (same company / plausible dates) — two
+    // unrelated jobs whose gear totals happen to add up are not a split.
+    const pool = candidates.map(c => c.job)
+      .filter(j => j.gear_total && j.gear_status !== 'paid' && j.gear_status !== 'na');
+    const singleHit = pool.some(j => Math.abs(j.gear_total - stubGear) <= 1);
     if (!singleHit) {
-      const gearJobs = jobsList.filter(j => !j.deleted && j.gear_total && j.gear_status !== 'paid' && j.gear_status !== 'na');
-      outer: for (let a = 0; a < gearJobs.length; a++) {
-        for (let b = a + 1; b < gearJobs.length; b++) {
-          if (Math.abs(gearJobs[a].gear_total + gearJobs[b].gear_total - stubGear) <= 1) {
+      outer: for (let x = 0; x < pool.length; x++) {
+        for (let y = x + 1; y < pool.length; y++) {
+          if (Math.abs(pool[x].gear_total + pool[y].gear_total - stubGear) <= 1) {
             split = true;
-            chosen = gearJobs[a]; chosen2 = gearJobs[b];
-            amt1 = gearJobs[a].gear_total; amt2 = gearJobs[b].gear_total;
-            amtEdited = true;
-            log('splitDetected', { a: gearJobs[a].project, b: gearJobs[b].project, total: stubGear });
+            chosen = pool[x]; chosen2 = pool[y];
+            amt1 = pool[x].gear_total; amt2 = pool[y].gear_total;
+            log('splitDetected', { a: pool[x].project, b: pool[y].project, total: stubGear });
             break outer;
           }
         }
@@ -1696,6 +1590,10 @@ async function pickMatch(p, uploaded, ocrText) {
 
   const list = h('div', {});
   const list2 = h('div', {});
+  const splitBox = h('input', {
+    type: 'checkbox', style: 'width:auto;margin-right:8px',
+    onchange: (e) => { split = e.target.checked; if (!split) chosen2 = null; redraw(); },
+  });
   const amt1Input = h('input', { type: 'number', inputmode: 'decimal' });
   const amt2Input = h('input', { type: 'number', inputmode: 'decimal' });
   amt1Input.addEventListener('input', e => { amt1 = e.target.value === '' ? null : parseFloat(e.target.value); amtEdited = true; sumNoteUpd(); });
@@ -1739,6 +1637,7 @@ async function pickMatch(p, uploaded, ocrText) {
         onclick: () => { chosen = null; split = false; redraw(); },
       }, h('div', { class: 'title' }, (chosen === null ? '✓ ' : '') + 'None of these — create a new job from this stub')));
     // Split UI: second-job picker + per-job amounts.
+    splitBox.checked = split;
     if (split && chosen) {
       list2.replaceChildren(
         ...cand2.filter(j => j.id !== chosen.id).map(j => h('div', {
@@ -1774,10 +1673,7 @@ async function pickMatch(p, uploaded, ocrText) {
     h('h2', {}, candidates.length ? 'Which job is this stub for?' : 'No matching job found'),
     list,
     h('label', { class: 'mt' },
-      h('input', {
-        type: 'checkbox', ...(split ? { checked: 'checked' } : {}), style: 'width:auto;margin-right:8px',
-        onchange: (e) => { split = e.target.checked; if (!split) chosen2 = null; redraw(); },
-      }), 'This check pays TWO jobs (split across two invoices)'),
+      splitBox, 'This check pays TWO jobs (split across two invoices)'),
     splitWrap,
     dayWrap,
     h('label', { class: 'mt' },
@@ -1815,22 +1711,22 @@ async function pickMatch(p, uploaded, ocrText) {
             job.job_status = 'confirmed';
             if (gearOnly) {
               if (markGearPaid) {
-                const short = job.gear_total && portion < job.gear_total - 1;
-                job.gear_status = short ? 'partial' : 'paid';
-                if (job.gear_total === null || job.gear_total === undefined) job.gear_total = portion;
+                const prior = gearReceived(allStubs.filter(st => st.matched_job_id === job.id
+                  && !(p.check_no && st.check_no === p.check_no)));
+                applyGearPayment(job, portion, prior);
                 if (via) job.gear_paid_via = via;
-                const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(portion)} split of check${p.check_no ? ' #' + p.check_no : ''})`;
+                const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmtRaw$(portion)} split of check${p.check_no ? ' #' + p.check_no : ''})`;
                 if (!job.notes.includes(gline)) job.notes = job.notes ? `${job.notes}\n${gline}` : gline;
               }
               if (markPaid) { job.wages_status = 'paid'; if (via) job.paid_via = via; }
             } else if (markPaid) {
               job.wages_status = 'paid';
               if (via) job.paid_via = via;
-              const line = `Paid ${p.check_date || ''}${p.check_no ? `, check #${p.check_no}` : ''} (${fmt$(portion)} split)`;
+              const line = `Paid ${p.check_date || ''}${p.check_no ? `, check #${p.check_no}` : ''} (${fmtRaw$(portion)} split)`;
               if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
             }
             // One record per (check, job) — a re-scan updates, never duplicates.
-            const existing = p.check_no && String(p.check_no).length >= 4
+            const existing = p.check_no && String(p.check_no).length >= 3
               ? allStubs.find(st => st.check_no === p.check_no && st.matched_job_id === job.id) : null;
             await store.putStub({
               id: existing ? existing.id : store.uid(),
@@ -1838,7 +1734,7 @@ async function pickMatch(p, uploaded, ocrText) {
               drive_file_id: p.drive_file_id || '', photo_name: p.photo_name || '',
               vendor: p.vendor, project_name: p.project_name, employer: p.employer,
               payee: p.payee || '', classification: p.classification || '',
-              payroll_employer: p.payroll_employer || '', paid_to: p.paid_to || '',
+              payroll_employer: p.payroll_employer || '', paid_to: p.paid_to || via || '',
               job_title: p.job_title || '', memo: p.memo || '',
               // Synthetic split lines keep gear vs wages accounting right per job.
               earnings: gearOnly ? [{ type: 'Kit/box rental (split)', hours: null, rate: null, amount: portion }] : [],
@@ -1871,7 +1767,7 @@ async function pickMatch(p, uploaded, ocrText) {
             company: p.employer || '',
             start_date: p.period_start || '', end_date: p.period_end || '',
             days_worked: p.day_count || null,
-            notes: ['Created from paystub', p.gross ? `gross ${fmt$(p.gross)}` : '',
+            notes: ['Created from paystub', p.gross ? `gross ${fmtRaw$(p.gross)}` : '',
               p.check_no ? `check #${p.check_no}` : ''].filter(Boolean).join(' · '),
             // The payment already arrived — no invoice pending on this job.
             invoice_status: markPaid ? 'na' : 'unsent',
@@ -1888,10 +1784,10 @@ async function pickMatch(p, uploaded, ocrText) {
         if (markPaid) job.wages_status = 'paid';
         if (stubGear > 0 && markGearPaid) {
           // A payment short of the job's stated gear total is partial, not paid.
-          const short = job.gear_total && stubGear < job.gear_total - 1;
-          job.gear_status = short ? 'partial' : 'paid';
-          if (job.gear_total === null || job.gear_total === undefined) job.gear_total = stubGear;
-          const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmt$(stubGear)}${short ? ` of ${fmt$(job.gear_total)} — partial` : ''})`;
+          const prior = gearReceived((await store.allStubs()).filter(st => st.matched_job_id === job.id
+            && !(p.check_no && st.check_no === p.check_no)));
+          const short = applyGearPayment(job, stubGear, prior) === 'partial';
+          const gline = `Gear paid via stub${p.check_date ? ' ' + p.check_date : ''} (${fmtRaw$(stubGear)}${short ? ' — partial' : ''})`;
           if (!job.notes.includes(gline)) job.notes = job.notes ? `${job.notes}\n${gline}` : gline;
         }
         // Backfill basics the job was missing, so the calendar event ends up
@@ -1943,7 +1839,7 @@ async function pickMatch(p, uploaded, ocrText) {
           if (stubGear > 0 && markGearPaid) job.gear_paid_via = via;
         }
         if (markPaid && p.check_date) {
-          const extras = [p.gross ? `gross ${fmt$(p.gross)}` : '',
+          const extras = [p.gross ? `gross ${fmtRaw$(p.gross)}` : '',
             p.hours ? `${p.hours} hrs` : '', p.day_count ? `${p.day_count} days` : '']
             .filter(Boolean).join(' · ');
           const line = `Paid ${p.check_date}${p.check_no ? `, check #${p.check_no}` : ''}${extras ? ` (${extras})` : ''}`;
@@ -1953,11 +1849,23 @@ async function pickMatch(p, uploaded, ocrText) {
         // The same check scanned again UPDATES its existing record — one
         // record per (check, job), so a previously-split check keeps both
         // halves and a re-scan lands on the right one.
-        const sameCheck = p.check_no && String(p.check_no).length >= 4
+        const sameCheck = p.check_no && String(p.check_no).length >= 3
           ? (await store.allStubs()).filter(s => s.check_no === p.check_no)
           : [];
-        const existingStub = sameCheck.find(s => s.matched_job_id === job.id)
-          || (sameCheck.length === 1 ? sameCheck[0] : null);
+        const existingStub = sameCheck.find(s => s.matched_job_id === job.id) || null;
+        // The same physical check already filed on ANOTHER job (same number
+        // plus same date or payer — a different company's check can share a
+        // number): ask before moving it, never re-point silently.
+        const elsewhere = sameCheck.filter(s => s.matched_job_id !== job.id
+          && ((s.check_date && s.check_date === p.check_date)
+            || (s.employer && p.employer && sq(s.employer) === sq(p.employer))));
+        if (elsewhere.length) {
+          const names = [...new Set(elsewhere.map(s => (jobsList.find(j => j.id === s.matched_job_id) || {}).project || 'another job'))].join(' and ');
+          if (confirm(`Check #${p.check_no} is already filed on ${names}.\n\nOK = move it to "${job.project}" (the other record is removed).\nCancel = keep both records (use this only if the check really paid both jobs).`)) {
+            for (const m of elsewhere) await store.deleteStub(m.id);
+            log('stubMoved', { check: p.check_no, to: job.project });
+          }
+        }
         const stubRec = {
           id: existingStub ? existingStub.id : store.uid(),
           created_at: existingStub?.created_at,
@@ -1965,7 +1873,7 @@ async function pickMatch(p, uploaded, ocrText) {
           vendor: p.vendor, project_name: p.project_name, employer: p.employer,
           payee: p.payee || '', classification: p.classification || '',
           payroll_employer: p.payroll_employer || '',
-          paid_to: p.paid_to || '',
+          paid_to: p.paid_to || via || '',
           job_title: p.job_title || '', memo: p.memo || '', earnings: p.earnings || [],
           deductions: p.deductions || [], total_deductions: p.total_deductions,
           period_start: p.period_start, period_end: p.period_end,
@@ -1987,7 +1895,7 @@ async function pickMatch(p, uploaded, ocrText) {
           ? `Check #${p.check_no} was already on file — record updated, not duplicated.`
           : !markPaid ? 'Stub filed.'
             : job.wages_status === 'partial'
-              ? (() => { const c = wageCoverage(job, [...(stubsForToast || []), stubRec]); return `Stub filed — ${job.project}: ${c.paid.size} of ${c.jobDays.length} days now paid.`; })()
+              ? (() => { const c = wageCoverage(job, [...(stubsForToast || []), stubRec]); return `Stub filed — ${job.project}: ${c.paidOnJob} of ${c.total} days now paid.`; })()
               : `Stub filed — ${job.project} wages marked paid ✓`, 5000);
         render('home');
         } catch (e) {
@@ -2327,7 +2235,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v103';
+const APP_VERSION = 'v104';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2361,7 +2269,7 @@ async function dedupeChecks() {
     for (const s of stubs) {
       // One record per (check, job) — a check SPLIT across two jobs keeps
       // both halves; only same-check-same-job copies collapse.
-      if (s.check_no && String(s.check_no).length >= 4) (byCheck[`${s.check_no}|${s.matched_job_id || ''}`] ||= []).push(s);
+      if (s.check_no && String(s.check_no).length >= 3) (byCheck[`${s.check_no}|${s.matched_job_id || ''}`] ||= []).push(s);
     }
     let removed = 0;
     for (const group of Object.values(byCheck)) {
