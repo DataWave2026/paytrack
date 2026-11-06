@@ -29,7 +29,7 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
   'no_cal', 'notes', 'updated_at', 'deleted',
   // Columns map to the Sheet by position — new ones must be appended here,
   // never inserted, or old rows parse shifted.
-  'rate_hourly', 'travel_dates', 'gear_invoices'];
+  'rate_hourly', 'travel_dates', 'gear_invoices', 'keep_cal'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'payee', 'classification', 'job_title', 'payroll_employer', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
@@ -60,7 +60,7 @@ const coerce = (c, raw) => {
     const n = parseFloat(v);
     return v === '' || Number.isNaN(n) ? null : n;
   }
-  if (c === 'deleted' || c === 'no_cal') return v === 'true';
+  if (c === 'deleted' || c === 'no_cal' || c === 'keep_cal') return v === 'true';
   if (c === 'hourly_rates') return v ? v.split('|').map(Number).filter(n => !Number.isNaN(n)) : [];
   if (c === 'work_dates' || c === 'travel_dates') return v ? v.split('|').filter(d => ISO_DAY.test(d)) : [];
   if (c === 'calendar_event_ids') return v ? v.split('|') : [];
@@ -194,7 +194,9 @@ export async function pushJobToCalendar(job) {
     job.calendar_event_ids = [];
   };
 
-  if (job.deleted) {
+  if (job.deleted && job.keep_cal) {
+    // "Remove from app, keep calendar event": leave every event in place.
+  } else if (job.deleted) {
     await deleteAll();
     // The remembered ids can be lost (a repair/restore clears them) — sweep
     // EVERY event still tagged with this job so a deleted job never leaves
@@ -418,7 +420,24 @@ export async function syncReminder(job) {
 // Push a job everywhere after an in-app edit. Event ids are persisted after
 // EVERY stage, even on failure — losing a freshly created event's id is how
 // duplicates were born (each retry inserted another copy).
-export async function pushJob(job) {
+// Pushes of the SAME job run one at a time. Overlapping pushes (e.g. four
+// paychecks saved within two minutes) each swept and rebuilt the job's
+// per-day events, deleting one another's fresh events — the job ended up
+// linked to events that no longer existed, and the calendar pull then read
+// them as "the user deleted this job". Each queued push starts from the
+// freshest stored copy, so a later save is never overwritten by an earlier one.
+const pushQueues = new Map();
+export function pushJob(job) {
+  const id = job.id;
+  const prev = pushQueues.get(id) || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => pushJobNow(id, job));
+  pushQueues.set(id, run);
+  run.finally(() => { if (pushQueues.get(id) === run) pushQueues.delete(id); }).catch(() => {});
+  return run;
+}
+
+async function pushJobNow(id, fallback) {
+  const job = (await store.getJob(id)) || fallback;
   try {
     await pushJobToCalendar(job);
   } finally {
@@ -430,6 +449,7 @@ export async function pushJob(job) {
     await store.putJob(job, { silent: true });
   }
   scheduleMirror();
+  return job;
 }
 
 // One-time sweep: collapse every duplicated PayTrack event on the calendar.
@@ -446,13 +466,13 @@ export async function cleanupCalendarDuplicates(onProgress) {
     let evs = [];
     try { evs = await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id); }
     catch (e) { log('cleanupListErr', String(e.message)); continue; }
-    if (evs.length && job.deleted) {
+    if (evs.length && job.deleted && !job.keep_cal) {
       // A deleted job keeps NO events — remove every tagged one.
       for (const ev of evs) {
         await g.deleteEvent(s.calendarId, ev.id);
         removed++;
       }
-    } else if (evs.length) {
+    } else if (evs.length && !job.deleted) {
       const known = new Set([job.calendar_event_id, ...(job.calendar_event_ids || [])].filter(Boolean));
       const byDate = {};
       for (const ev of evs) {
@@ -552,7 +572,27 @@ export async function pullCalendar() {
         const known = ev.id === job.calendar_event_id
           || (job.calendar_event_ids || []).includes(ev.id);
         if (!known) continue;
-        job.deleted = true;
+        // Delete the job only when NONE of its events survive. If live tagged
+        // events remain (a push rebuilt them, or one day was removed), relink
+        // the job to those instead of throwing the whole job away.
+        let live = [];
+        try {
+          live = (await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id))
+            .filter(e => e.status !== 'cancelled');
+        } catch (e) { log('relinkListErr', String(e.message)); continue; }
+        if (live.length) {
+          if ((job.calendar_event_ids || []).length || live.length > 1) {
+            job.calendar_event_ids = live.map(e => e.id);
+            job.calendar_event_id = '';
+          } else {
+            job.calendar_event_id = live[0].id;
+            job.calendar_event_ids = [];
+          }
+          log('calRelinked', { project: job.project, events: live.length });
+        } else {
+          job.deleted = true;
+          log('calDeletedJob', { project: job.project });
+        }
       }
       else {
         // Jobs with specific worked days have several events; a single event's

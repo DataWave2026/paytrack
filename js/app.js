@@ -794,7 +794,8 @@ async function editJob(existing, prefill) {
         log('jobRemoved', { project: job.project, mode: 'app-only' });
         await repointStubs(job);
         job.deleted = true;
-        // Forget the event links so deletion never touches the calendar.
+        // keep_cal: the deleted-job sweep must leave this job's events alone.
+        job.keep_cal = true;
         job.calendar_event_id = '';
         job.calendar_event_ids = [];
         await store.putJob(job);
@@ -2165,6 +2166,7 @@ async function settingsView() {
         class: 'inline secondary', style: 'font-size:.7rem;padding:4px 9px',
         onclick: async () => {
           j.deleted = false;
+          j.keep_cal = false;
           // Forget old event links: those events were cancelled when the job
           // was deleted, and a restored job must get fresh ones instead of
           // being re-tombstoned by its own stale cancellations.
@@ -2331,7 +2333,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v101';
+const APP_VERSION = 'v102';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
