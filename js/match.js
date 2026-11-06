@@ -21,7 +21,14 @@ function overlapScore(stub, job) {
   const s2 = job.start_date, e2 = job.end_date || job.start_date;
   const start = s1 > s2 ? s1 : s2;
   const end = e1 < e2 ? e1 : e2;
-  if (start <= end) return 50;                       // real overlap
+  if (start <= end) {
+    // Real overlap — full marks when it covers at least half of the shorter
+    // of the two ranges; a single shared edge day scores less, so the job a
+    // pay period mostly falls in beats its neighbour.
+    const shared = daysBetween(start, end) + 1;
+    const shorter = Math.min(daysBetween(s1, e1), daysBetween(s2, e2)) + 1;
+    return shared / shorter >= 0.5 ? 50 : 35;
+  }
   const gap = Math.min(Math.abs(daysBetween(e1, s2)), Math.abs(daysBetween(e2, s1)));
   if (gap <= 3) return 30;                           // adjacent (weekly period edges)
   if (gap <= 10) return 10;
@@ -97,7 +104,7 @@ function nameScore(stub, job) {
     for (const b of jobNames) {
       const sq = b.replace(/\s/g, '');
       if (sq === ac) best = Math.max(best, 35);
-      else if (sq.startsWith(ac) || b.split(' ')[0] === ac) best = Math.max(best, 25);
+      else if (ac.length >= 4 && (sq.startsWith(ac) || b.split(' ')[0] === ac)) best = Math.max(best, 25);
     }
   }
   for (const a of stubNames) {
@@ -105,8 +112,12 @@ function nameScore(stub, job) {
       if (!a || !b) continue;
       // An exact title match is close to decisive — gear checks often arrive
       // dated after the worked days, so dates alone can't carry it.
-      if (a === b) best = Math.max(best, 40);
-      else if (a.includes(b) || b.includes(a)) best = Math.max(best, 25);
+      // "Riverton (Part 2)" / "(Week 3)" is the same title as "Riverton".
+      const bBase = b.replace(/\s+(part|pt|week|wk)\s*\d+$/, '');
+      if (a === b || a === bBase) best = Math.max(best, 40);
+      // (containment only counts for names of 4+ letters — a job called
+      // "X" or "El" is contained in almost anything)
+      else if (Math.min(a.length, b.length) >= 4 && (a.includes(b) || b.includes(a))) best = Math.max(best, 25);
       else {
         const aw = new Set(a.split(' ')), bw = b.split(' ');
         const common = bw.filter(w => w.length > 2 && aw.has(w)).length;

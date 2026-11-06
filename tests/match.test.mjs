@@ -132,3 +132,20 @@ test('show title matches a job logged by its acronym', async () => {
   assert.equal(m[0].job.id, 'a');
   assert.ok(m[0].reasons.includes('name matches'));
 });
+
+// ---- audit regressions ----
+test('the job a pay period mostly falls in beats its neighbour', () => {
+  const js = [{ id: 'r1', project: 'Riverton', start_date: '2026-09-14', end_date: '2026-09-27' },
+    { id: 'r2', project: 'Riverton (part 2)', start_date: '2026-09-28', end_date: '2026-10-02' }];
+  const m = matchStub({ project_name: 'Riverton', period_start: '2026-09-27', period_end: '2026-10-03', hourly_rates: [] }, js);
+  assert.equal(m[0].job.id, 'r2');
+});
+
+test('short acronyms and tiny names do not create confident matches', () => {
+  const js = [{ id: 'x', project: 'Top Chef', start_date: '2026-09-20', end_date: '2026-09-26' },
+    { id: 'y', project: 'El', start_date: '2026-09-20', end_date: '2026-09-26' }];
+  const m = matchStub({ project_name: 'THE OTHER PROJECT', period_start: '2026-09-20', period_end: '2026-09-26', hourly_rates: [] }, js);
+  assert.ok(m.every(c => c.score < 70), JSON.stringify(m.map(c => [c.job.project, c.score])));
+  const n = matchStub({ project_name: 'Next Level Chef', period_start: '2026-09-20', period_end: '2026-09-26', hourly_rates: [] }, js);
+  assert.ok(n.find(c => c.job.id === 'y').score < 70);
+});

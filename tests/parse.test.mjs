@@ -828,3 +828,97 @@ FSO: JANE M DOE`;
   assert.equal(p.net, 2031.82);
   assert.equal(p.hours, 22);
 });
+
+// ---- audit regressions ----
+test('a check whose memo says "rental" still parses as a check', () => {
+  const p = parseStub(`Streamline Media LLC
+1042
+09/12/2026
+PAY TO THE ORDER OF Example Media Co $1,200.00
+Memo: DIT equipment rental inv 2629`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.gross, 1200);
+  assert.equal(p.check_no, '1042');
+  assert.equal(p.check_date, '2026-09-12');
+  assert.match(p.earnings[0].type, /Equipment/);
+});
+
+test('"P.O. Box" in an address does not make a wage check a gear payment', () => {
+  const p = parseStub(`Streamline Media LLC
+P.O. Box 4410
+Burbank, CA 91503
+1042
+09/12/2026
+PAY TO THE ORDER OF Jane Doe $955.00
+Memo: Riverton day rate`);
+  assert.equal(p.vendor, 'check');
+  assert.match(p.earnings[0].type, /Check payment/);
+  assert.equal(p.check_no, '1042');
+});
+
+test('check number is not taken from an invoice number or a street number', () => {
+  const a = parseStub(`Streamline Media LLC
+1042
+09/12/2026
+PAY TO THE ORDER OF Jane Doe $955.00
+Memo: Invoice No. 2629 Riverton day rate`);
+  assert.equal(a.check_no, '1042');
+  const b = parseStub(`Deluxe eCheck
+1234 Sunset Blvd
+0817
+09/12/2026
+PAY TO THE ORDER OF Jane Doe $955.00
+VOID AFTER 90 DAYS`);
+  assert.equal(b.check_no, '0817');
+});
+
+test('money labels never pair with dates or invoice numbers', () => {
+  assert.equal(parseMoney('09/08/2026'), null);
+  assert.equal(parseMoney('16-1606/1220'), null);
+  assert.equal(parseMoney('.50'), 0.5);
+  const p = parseStub(`Gross Pay
+09/20/2026
+Net Pay
+$1,000.00
+$800.00`);
+  assert.notEqual(p.gross, 9);
+});
+
+test('2-digit-year dates are seen everywhere, implausible ones rejected', () => {
+  assert.equal(parseDate('9/12/26'), '2026-09-12');
+  assert.equal(parseDate('8/10/12'), '');
+  const p = parseStub(`PAY TO THE ORDER OF Jane Doe $955.00
+Check No. 8841
+DATE 9/12/26`);
+  assert.equal(p.check_date, '2026-09-12');
+});
+
+test('calendar notes round-trip: partial stays partial, decimals survive', () => {
+  const note = jobToNote({ rate_amount: 955, rate_hours: 10, wages_status: 'partial', gear_total: 1200, gear_status: 'partial' });
+  const back = parseJobNote(note);
+  assert.equal(back.wages_status, 'partial');
+  assert.equal(back.gear_status, 'partial');
+  assert.equal(parseJobNote('$955/10 paid, $1312.5/gear not yet paid').gear_total, 1312.5);
+  assert.equal(parseJobNote('$955/10, gear not yet paid').gear_total, null);
+  assert.equal(parseJobNote('$955/10, gear not yet paid').rate_amount, 955);
+  assert.equal(parseJobNote('Shoot Sept 12 gear paid').gear_total, null);
+  assert.ok(looksLikeJob('Nike $1,250/10 not yet paid', ''));
+});
+
+test('EP: split deposits are summed, inline rows and adjustments parse', () => {
+  const p = parseStub(`ENTERTAINMENT PARTNERS SERVICES LLC
+\tEXAMPLE MEDIA CO TAX ID: ***-**-0000 FSO: DOE/JANE M
+\tDesc Hours Amount
+REG 81.82 16.00 1,309.12
+O.T.
+122.73
+4.0
+490.92
+ADJ
+-50.00
+Union:
+\tTaxes Deductions Current Amt YTDDIRDP1 1,500.00 DIRDP2 250.04`);
+  assert.equal(p.net, 1750.04);
+  assert.equal(p.gross, 1750.04);
+  assert.deepEqual(p.earnings.map(e => [e.type, e.amount]), [['Straight time', 1309.12], ['Overtime', 490.92], ['Adjustment', -50]]);
+});

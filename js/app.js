@@ -1323,14 +1323,22 @@ function confirmStubForm(parsed, uploaded, ocrText) {
   const wordsMatch = (a, b) => {
     const wa = nameWords(a), wb = nameWords(b);
     if (wa.size < 2 || wb.size < 2) return false;
-    let common = 0;
-    for (const w of wa) if (wb.has(w)) common++;
-    return common >= 2;
+    const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
+    for (const w of small) if (!big.has(w)) return false;   // every word of the shorter name
+    return true;
   };
   if (!p.paid_to && p.payee) {
     const pv = sqk(p.payee), co = sqk(settings().companyName), me = sqk(settings().personalName);
-    if (co && (pv.includes(co) || co.includes(pv) || wordsMatch(p.payee, settings().companyName))) p.paid_to = 'company';
-    else if (me && (pv.includes(me) || me.includes(pv) || wordsMatch(p.payee, settings().personalName))) p.paid_to = 'me';
+    const hit = (x, name) => x && pv.length >= 4 && (pv.includes(x) || x.includes(pv) || wordsMatch(p.payee, name));
+    if (pv && pv === me) p.paid_to = 'me';                 // exact matches first
+    else if (pv && pv === co) p.paid_to = 'company';
+    else {
+      const isCo = hit(co, settings().companyName), isMe = hit(me, settings().personalName);
+      // Both match (company named after the person): an entity suffix decides.
+      if (isCo && isMe) p.paid_to = /\b(llc|inc|corp|ltd|co|company|productions?|media)\b/i.test(p.payee) ? 'company' : 'me';
+      else if (isCo) p.paid_to = 'company';
+      else if (isMe) p.paid_to = 'me';
+    }
   }
   const payeeNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
   if (p.payee) {
@@ -1482,7 +1490,10 @@ async function pickMatch(p, uploaded, ocrText) {
   });
   // Preselect only a CONFIDENT match (dates + rate/name agree); otherwise
   // default to "create a new job" so a stale selection never sticks.
-  let chosen = candidates[0] && candidates[0].score >= 70 ? candidates[0].job : null;
+  // …and only when it clearly beats the runner-up: two jobs scoring within
+  // 10 points is a tie the user should break, not the app.
+  let chosen = candidates[0] && candidates[0].score >= 70
+    && (!candidates[1] || candidates[0].score - candidates[1].score >= 10) ? candidates[0].job : null;
 
   // One check can pay TWO jobs (two invoices, same company). If no single
   // job's gear total matches but a PAIR of unpaid-gear jobs sums to this
@@ -1765,7 +1776,9 @@ async function pickMatch(p, uploaded, ocrText) {
             ...store.blankJob(),
             project: p.project_name || p.employer || 'Job from stub',
             company: p.employer || '',
-            start_date: p.period_start || '', end_date: p.period_end || '',
+            // A check has no pay period: date the job by the check so it
+            // still reaches the calendar.
+            start_date: p.period_start || p.check_date || '', end_date: p.period_end || p.period_start || p.check_date || '',
             days_worked: p.day_count || null,
             notes: ['Created from paystub', p.gross ? `gross ${fmtRaw$(p.gross)}` : '',
               p.check_no ? `check #${p.check_no}` : ''].filter(Boolean).join(' · '),
@@ -2235,7 +2248,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v104';
+const APP_VERSION = 'v105';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

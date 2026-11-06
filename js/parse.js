@@ -14,13 +14,15 @@ export function parseDate(s) {
     if (mo) return `${m[3]}-${String(mo).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
   }
   m = s.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);                   // 08/25/2026
-  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31 && +m[3] >= 2000 && +m[3] <= 2100) {
     return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
   }
   m = s.match(/(\d{4})-(\d{2})-(\d{2})/);                               // 2026-08-25
   if (m) return m[0];
   m = s.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/);                     // 09/27/26 (EP)
-  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+  // 2-digit years only in a plausible window, so "8/10/12" (an hours split)
+  // isn't read as a 2012 date.
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31 && +m[3] >= 18 && +m[3] <= 45) {
     return `20${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
   }
   return '';
@@ -28,7 +30,10 @@ export function parseDate(s) {
 
 export function parseMoney(s) {
   if (s === null || s === undefined) return null;
-  const m = String(s).replace(/[,\s]/g, '').match(/\$?(\d+(?:\.\d{1,2})?)/);
+  const t = String(s).replace(/[,\s]/g, '');
+  // Dates and routing fragments ("09/08/2026", "16-1606/1220") are not money.
+  if (/\d[\/]\d/.test(t) || /\d-\d{3,}/.test(t)) return null;
+  const m = t.match(/\$?(\d+(?:\.\d{1,2})?|\.\d{1,2})/);
   return m ? parseFloat(m[1]) : null;
 }
 
@@ -75,11 +80,13 @@ function labeled(ls, labelRe, valid = (v) => !!v) {
 }
 
 const isDate = (v) => !!parseDate(v);
-const isMoney = (v) => parseMoney(v) !== null;
+// A money VALUE is a line that is only an amount ("$1,000.00", "976.95",
+// "*****2,000.00") — not any line that happens to contain a digit.
+const isMoney = (v) => /^\(?-?\$?\s?\*{0,20}[\d,]*\.?\d+\)?$/.test(String(v).trim()) && parseMoney(v) !== null;
 
 function allDates(text) {
   const found = [];
-  const re = /([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})|(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})/g;
+  const re = /([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})|(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})|(\b\d{1,2}\/\d{1,2}\/\d{2}\b)/g;
   let m;
   while ((m = re.exec(text))) {
     const iso = parseDate(m[0]);
@@ -233,7 +240,7 @@ function parseGenericInto(p, text) {
     else if (ds.length === 1) { p.period_start = ds[0]; p.period_end = ds[0]; }
   }
   if (!p.hourly_rates.length) p.hourly_rates = hourlyRates(text);
-  if (!p.earnings.length) p.earnings = parseEarnings(text);
+  if (!p.earnings.length) p.earnings = parseEarnings(text).filter(e => e.amount);   // no empty/zero junk rows
   if (!p.deductions.length) p.deductions = parseDeductions(text);
   if (p.total_deductions === null) {
     p.total_deductions = parseMoney(labeled(ls, /total\s+deductions|current\s+deductions/i, isMoney));
@@ -259,7 +266,8 @@ function parseGenericInto(p, text) {
     p.project_name = labeled(ls, /^project(\s+name)?\b/i, projectish)
       || labeled(ls, /^job\s+name\b/i, projectish);
   }
-  if (!p.project_name || /^(commercial|feature|tv|television|music\s+video|pilot|episodic)$/i.test(p.project_name)) {
+  if (!p.project_name || LABELY.test(p.project_name)
+      || /^(commercial|feature|tv|television|music\s+video|pilot|episodic)$/i.test(p.project_name)) {
     // Cast & Crew-style stubs: the show name carries its job code
     // ("T-MOBILE #CO-37509") — the label block only yields the job TYPE.
     const jl = ls.find(l => /#\s*[A-Z]{2,3}-\d{3,}/.test(l) && /[A-Za-z]{2}/.test(l.replace(/#.*$/, '')));
@@ -514,10 +522,12 @@ function parseEP(text) {
   // Check number: digits on the line just above or below its label.
   const ci = ls.findIndex(l => /^check\s+no:?$/i.test(l));
   if (ci >= 0) {
-    const near = [ls[ci - 1], ls[ci + 1], ls[ci + 2]].find(l => /^\d{5,12}$/.test(l || ''));
+    const near = [ls[ci - 1], ls[ci + 1], ls[ci + 2], ls[ci + 3], ls[ci + 4]].find(l => /^\d{5,12}$/.test(l || ''));
     if (near) p.check_no = near;
   }
-  p.check_date = parseDate(after(/^check\s+date:?/i)) || '';
+  const di = ls.findIndex(l => /^check\s+date:?/i.test(l));
+  p.check_date = parseDate(after(/^check\s+date:?/i))
+    || (di >= 0 ? (ls.slice(di + 1, di + 6).map(parseDate).find(Boolean) || '') : '');
 
   const per = text.match(/start:\s*(\S+)\s+end:\s*(\S+)/i);
   if (per) { p.period_start = parseDate(per[1]); p.period_end = parseDate(per[2]); }
@@ -544,13 +554,19 @@ function parseEP(text) {
     for (const l of ls.slice(si + 1)) {
       if (/^(union|occupation|taxes|totals)\b/i.test(l)) break;
       if (/^rate:/i.test(l)) continue;
-      if (/^[\d,]+(\.\d+)?$/.test(l)) { if (cur) cur.nums.push(parseFloat(l.replace(/,/g, ''))); continue; }
+      const num = (t) => (/^-|-$|^\(.*\)$/.test(t) ? -1 : 1) * parseFloat(t.replace(/[,()\-]/g, ''));
+      if (/^\(?-?[\d,]+(\.\d+)?-?\)?$/.test(l)) { if (cur) cur.nums.push(num(l)); continue; }
+      // A whole row on one line: "REG 81.82 16.00 1,309.12".
+      const row = l.match(/^([A-Za-z][A-Za-z.\s]*?)\s+((?:\(?-?[\d,]+(?:\.\d+)?-?\)?\s*)+)$/);
+      if (row) { flush(); cur = { type: row[1].trim(), nums: row[2].trim().split(/\s+/).map(num) }; continue; }
       if (/[A-Za-z]/.test(l)) { flush(); cur = { type: l, nums: [] }; }
     }
     flush();
   }
   // Friendly names for EP's terse earning codes.
-  const CODES = { 'REG': 'Straight time', 'O.T.': 'Overtime', 'OT': 'Overtime', 'DT': 'Double time', 'DIEM': 'Per diem', 'MP': 'Meal penalty' };
+  const CODES = { 'REG': 'Straight time', 'O.T.': 'Overtime', 'OT': 'Overtime', 'DT': 'Double time',
+    'DOUBLE': 'Double time', '6THDAY': '6th day', '7THDAY': '7th day', 'DIEM': 'Per diem',
+    'MP': 'Meal penalty', 'MEAL A': 'Meal allowance', 'MEAL P': 'Meal penalty', 'ADJ': 'Adjustment' };
   for (const e of p.earnings) e.type = CODES[e.type.toUpperCase()] || e.type;
   p.hourly_rates = [...new Set(p.earnings.map(e => e.rate).filter(Boolean))].sort((a, b) => a - b);
   const hrs = p.earnings.reduce((s, e) => s + (e.hours || 0), 0);
@@ -558,8 +574,9 @@ function parseEP(text) {
   const sum = p.earnings.reduce((s, e) => s + (e.amount || 0), 0);
   if (sum) p.gross = Math.round(sum * 100) / 100;
   // Net = the direct-deposit line ("DIRDP1 2,031.82").
-  const dd = text.match(/DIRDP\d*\s+([\d,]+\.\d{2})/i);
-  if (dd) p.net = parseMoney(dd[1]);
+  // (a deposit can be split across accounts: DIRDP1, DIRDP2 … — sum them)
+  const dds = [...text.matchAll(/DIRDP\d*\s+([\d,]+\.\d{2})/gi)].map(m => parseMoney(m[1]));
+  if (dds.length) p.net = Math.round(dds.reduce((a, b) => a + b, 0) * 100) / 100;
   if (p.gross !== null && p.net !== null) p.total_deductions = Math.round((p.gross - p.net) * 100) / 100;
 
   const occ = after(/^occupation\s+title:?/i);
@@ -606,6 +623,7 @@ export function parseCheck(text) {
     let next = '';
     for (let k = payIdx + 1; k < Math.min(ls.length, payIdx + 4); k++) {
       if (boiler.test(ls[k])) continue;
+      if (/^[*$\d\s,.\/-]+$/.test(ls[k])) continue;      // amount box or date, not a name
       next = ls[k]; break;
     }
     p.payee = (/[A-Za-z0-9]/.test(tail) ? tail : next)
@@ -631,20 +649,29 @@ export function parseCheck(text) {
     .replace(/(\D)\d{6,}.*$/, '$1').trim();
   // Amount: labeled, else the largest money figure on the page — checks
   // print it $-prefixed, asterisk-protected (******2,000.00), or bare.
-  let amt = parseMoney(labeled(ls, /amount/i, isMoney));
+  // A labelled amount must look like money ("$955.00"), not an invoice number
+  // that happens to follow an AMOUNT column header.
+  let amt = parseMoney(labeled(ls, /amount/i, v => isMoney(v) && /\$|\.\d{2}\b/.test(v)));
   if (amt === null) {
-    const all = [...text.matchAll(/(?:\$|\*+|^|\s)([\d,]+\.\d{2})\b/gm)]
+    const body = ls.filter(l => !/ytd|year\s+to\s+date|not\s+valid|or\s+more|over\s+\$/i.test(l)).join('\n');
+    const all = [...body.matchAll(/(?:\$|\*+|^|\s)([\d,]+\.\d{2})\b/gm)]
       .map(m => parseFloat(m[1].replace(/,/g, '')));
     if (all.length) amt = Math.max(...all);
   }
   p.gross = amt; p.net = amt;
   // Check number: labeled, else a standalone 3-6 digit line (corner number).
-  const num = text.match(/(?:check|cheque)\s*(?:no\.?|number|#)?\s*[:#]?\s*(\d{3,10})\b/i)
-    || text.match(/\bno\.?\s*[:#]?\s*(\d{3,10})\b/i);
+  // Check number, most reliable source first: an explicit "Check No/#" on
+  // one line; the standalone corner number; a bare "No. 123" that is not an
+  // invoice number. Never across a line break ("eCheck\n1234 Sunset Blvd").
+  const num = text.match(/(?:check|cheque)[ \t]*(?:no\.?|number|#)[ \t]*[:#]?[ \t]*(\d{3,10})\b/i);
   if (num) p.check_no = num[1];
   if (!p.check_no) {
     const solo = ls.find(l => /^#?\d{3,6}$/.test(l.trim()));
     if (solo) p.check_no = solo.trim().replace(/^#/, '');
+  }
+  if (!p.check_no) {
+    const bare = ls.map(l => /inv(oice)?/i.test(l) ? null : l.match(/\bno\.?[ \t]*[:#]?[ \t]*(\d{3,10})\b/i)).find(Boolean);
+    if (bare) p.check_no = bare[1];
   }
   // Check date: the date printed NEXT TO the check number wins — the first
   // date on the page is often an invoice date on the remittance stub.
@@ -694,7 +721,9 @@ export function parseCheck(text) {
     .filter(Boolean).join(' · ');
   // Whole-check classification: checks are short documents, so equipment
   // words anywhere (memo or remittance description) mean a gear payment.
-  const gearish = /\b(equip\w*|gear|rental|kit|box|digitech)\b/i.test(text) || /\beq\b/i.test(memo);
+  // (address lines are excluded — "P.O. Box 4410" is not a box rental)
+  const gearText = ls.filter(l => !/p\.?\s*o\.?\s*box|lock\s*box/i.test(l) && !addressy.test(l)).join('\n');
+  const gearish = /\b(equip\w*|gear|rental|kit|box|digitech)\b/i.test(gearText) || /\beq\b/i.test(memo);
   p.earnings = [{ type: gearish ? 'Equipment rental (check)' : 'Check payment',
     hours: null, rate: null, amount: p.gross }];
   return p;
@@ -706,7 +735,10 @@ export function parseStub(text) {
   }
   // A bare check has no earnings table — a stub WITH an attached check
   // portion still parses as a full stub.
-  if (looksLikeCheck(text) && !EARN_TYPES.test(text)) return parseCheck(text);
+  // (the test is for an actual earnings/deductions table, not a keyword — a
+  // check whose memo says "rental" or "prep day" is still a check)
+  const hasPayTable = /earning\s+type|gross\s+(earnings|pay|wages)|desc\s+hours\s+amount|total\s+hours|net\s+(pay|wages|earnings)|\bdeductions\b|\bytd\b/i.test(text);
+  if (looksLikeCheck(text) && !hasPayTable) return parseCheck(text);
   return parseGenericInto(blankParse(), text);
 }
 
@@ -716,47 +748,49 @@ export function parseJobNote(note) {
   const out = { rate_amount: null, rate_hours: null, rate_text: '', gear_total: null,
     gear_rate: null, gear_period: null, wages_status: null, gear_status: null };
   if (!note) return out;
+  // "partially paid" must be tested before "paid".
+  const stat = (t, dflt) => /partial/i.test(t) ? 'partial'
+    : /not\s+yet|unpaid|pending|waiting/i.test(t) ? 'unpaid'
+      : /paid/i.test(t) ? 'paid' : dflt;
 
-  // "$1200/gear paid", "$1250/day gear not yet paid", "$1500/wk for gear"
-  const gear = note.match(/\$?\s?([\d,]+(?:\.\d{2})?)\s*(\/\s*(?:day|wk|week))?\s*(?:\/|for)?\s*\bgear\b([^,;.]*)/i);
+  // "$1200/gear paid", "$1250/day gear not yet paid", "$1500/wk for gear".
+  // The amount must carry a $ or sit directly before "/gear" — "Sept 12 gear
+  // paid" and "$955/10, gear not yet paid" have no gear amount.
+  let gear = note.match(/(?<![\d.,])(\$\s?)?((?:\d[\d,]*\d|\d)(?:\.\d{1,2})?)\s*(\/\s*(?:day|wk|week))?\s*(\/|for)?\s*\bgear\b([^,;.]*)/i);
+  if (gear && !gear[1] && gear[4] !== '/') gear = null;
   if (gear) {
-    if (gear[2]) {
-      out.gear_rate = parseMoney(gear[1]);
-      out.gear_period = /w(k|eek)/i.test(gear[2]) ? 'week' : 'day';
-    } else out.gear_total = parseMoney(gear[1]);
-    out.gear_status = /not\s+yet|unpaid|pending|waiting/i.test(gear[3]) ? 'unpaid'
-      : /paid/i.test(gear[3]) ? 'paid' : 'unpaid';
+    if (gear[3]) {
+      out.gear_rate = parseMoney(gear[2]);
+      out.gear_period = /w(k|eek)/i.test(gear[3]) ? 'week' : 'day';
+    } else out.gear_total = parseMoney(gear[2]);
+    out.gear_status = stat(gear[5], 'unpaid');
   } else {
     const bare = note.match(/\bgear\b([^,;.]*)/i);
-    if (bare && /paid|not\s+yet|unpaid/i.test(bare[1])) {
-      out.gear_status = /not\s+yet|unpaid/i.test(bare[1]) ? 'unpaid' : 'paid';
-    }
+    if (bare && /paid|not\s+yet|unpaid/i.test(bare[1])) out.gear_status = stat(bare[1], 'paid');
   }
   const noteNoGear = gear ? note.replace(gear[0], '') : note;
 
-  const rate = noteNoGear.match(/\$\s?([\d,]+(?:\.\d{2})?)\s*\/\s*(\d{1,2})\b([^,;.]*)/);
+  const rate = noteNoGear.match(/\$\s?([\d,]+(?:\.\d{1,2})?)\s*\/\s*(\d{1,2})\b([^,;.]*)/);
   if (rate) {
     out.rate_amount = parseMoney(rate[1]);
     out.rate_hours = parseInt(rate[2], 10);
     out.rate_text = `$${rate[1]}/${rate[2]}`;
-    out.wages_status = /not\s+yet|unpaid|pending|waiting/i.test(rate[3]) ? 'unpaid'
-      : /paid/i.test(rate[3]) ? 'paid' : 'unpaid';
+    out.wages_status = stat(rate[3], 'unpaid');
   } else if (/scale/i.test(noteNoGear)) {
     out.rate_text = 'scale';
     const wages = noteNoGear.match(/scale([^,;.]*)/i);
-    out.wages_status = wages && /not\s+yet|unpaid|pending|waiting/i.test(wages[1]) ? 'unpaid'
-      : wages && /paid/i.test(wages[1]) ? 'paid' : 'unpaid';
+    out.wages_status = stat(wages ? wages[1] : '', 'unpaid');
   } else {
     // "$87/hr 8 hr guar. paid", "$1000/day?" — hourly/daily styles
     const alt = noteNoGear.match(/\$\s?([\d,]+(?:\.\d{2})?)\s*\/\s*(hr|hour|day)\b([^,;.]*)/i);
     if (alt) {
       out.rate_text = `$${alt[1]}/${alt[2].toLowerCase()}`;
       if (/day/i.test(alt[2])) out.rate_amount = parseMoney(alt[1]);
-      out.wages_status = /not\s+yet|unpaid|pending|waiting/i.test(alt[3]) ? 'unpaid'
-        : /paid/i.test(alt[3]) ? 'paid' : null;
+      out.wages_status = stat(alt[3], null);
     }
     if (!out.wages_status) {
-      if (/wages?\s+paid/i.test(noteNoGear)) out.wages_status = 'paid';
+      if (/wages?\s+partially\s+paid/i.test(noteNoGear)) out.wages_status = 'partial';
+      else if (/wages?\s+paid/i.test(noteNoGear)) out.wages_status = 'paid';
       else if (/not\s+yet\s+paid|unpaid/i.test(noteNoGear)) out.wages_status = 'unpaid';
       else if (/\bpaid\b/i.test(noteNoGear)) out.wages_status = 'paid';
     }
@@ -767,8 +801,8 @@ export function parseJobNote(note) {
 // Does a calendar event look like one of the user's job entries?
 export function looksLikeJob(summary, description) {
   const s = `${summary || ''} ${description || ''}`;
-  return /\$\s?\d{2,4}(?:\.\d{2})?\s*\/\s*\d{1,2}\b/.test(s)   // $955/10
-    || /\$\s?\d{2,5}\s*\/\s*(day|wk|week|hr|hour)/i.test(s)    // $1000/day, $87/hr
+  return /\$\s?\d[\d,]{1,6}(?:\.\d{2})?\s*\/\s*\d{1,2}\b/.test(s)   // $955/10, $1,250/10
+    || /\$\s?\d[\d,]{1,6}\s*\/\s*(day|wk|week|hr|hour)/i.test(s)    // $1000/day, $87/hr
     || /\/\s?gear|gear\s+(paid|rental|not)/i.test(s)
     || /\bscale\s+(paid|not)/i.test(s)
     || /\bwages?\s+(paid|not|unpaid)/i.test(s)
