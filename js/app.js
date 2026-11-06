@@ -46,7 +46,7 @@ const fmt$ = (n) => {
   return '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
     ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
-const today = () => new Date().toISOString().slice(0, 10);
+const today = store.today;   // LOCAL date (UTC rolled over at ~4pm Pacific)
 
 function fmtRange(a, b, alwaysYear = false) {
   if (!a) return 'no dates';
@@ -265,7 +265,7 @@ function jobRow(job, stubsByJob) {
           e.stopPropagation();
           job.job_status = 'confirmed';
           await store.putJob(job);
-          if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+          sync.pushSoon(job).catch(() => {});
           toast(`${job.project} confirmed — now a tracked job.`);
         },
       }, 'Confirm') : null,
@@ -278,7 +278,7 @@ function jobRow(job, stubsByJob) {
           e.stopPropagation();
           job.invoice_status = job.invoice_status === 'unsent' ? 'sent' : 'unsent';
           await store.putJob(job);
-          if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+          sync.pushSoon(job).catch(() => {});
           toast(job.invoice_status === 'sent'
             ? 'Invoice marked sent — daily reminder removed.'
             : 'Invoice marked NOT sent — daily reminder resumes.');
@@ -370,11 +370,7 @@ function segmented(name, value, options, onChange) {
 
 const { gearUnits, calcGearTotal } = store;
 
-function addDaysStr(iso, n) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
+const addDaysStr = store.addDays;   // timezone-proof day arithmetic
 
 // Mini-calendar of tappable day chips for a date range. Returns the number
 // of days rendered (0/1 = no picker needed).
@@ -506,7 +502,7 @@ async function repointStubs(job) {
     if (target.gear_status === 'na' || target.gear_status === 'unpaid') target.gear_status = 'paid';
     if (!target.gear_paid_via) target.gear_paid_via = stubs.find(s => s.paid_to)?.paid_to || '';
     await store.putJob(target, { silent: true });
-    if (auth.isConnected()) sync.pushJob(target).catch(() => {});
+    sync.pushSoon(target).catch(() => {});
   }
   log('stubRepoint', { n: stubs.length, to: target.project, gearMoved });
   toast(`${stubs.length} payment record${stubs.length === 1 ? '' : 's'} moved to the other "${target.project}" job.`, 4500);
@@ -782,7 +778,7 @@ async function editJob(existing, prefill) {
         for (const j of toSave) {
           calcGearTotal(j);
           await store.putJob(j);
-          if (auth.isConnected()) sync.pushJob(j).catch(e => toast('Calendar sync: ' + e.message, 5000));
+          sync.pushSoon(j).catch(e => { if (e.code !== 'NEEDS_CONNECT') toast('Calendar sync: ' + e.message, 5000); });
         }
         toast(toSave.length > 1 ? `Saved ${toSave.length} weekly entries.` : 'Saved.');
         render('jobs');
@@ -799,7 +795,7 @@ async function editJob(existing, prefill) {
         job.calendar_event_id = '';
         job.calendar_event_ids = [];
         await store.putJob(job);
-        if (auth.isConnected()) sync.pushJob(job).catch(() => {});  // clears reminders only
+        sync.pushSoon(job).catch(() => {});  // clears reminders only
         toast('Removed from the app; calendar untouched.');
         render('jobs');
       },
@@ -811,7 +807,7 @@ async function editJob(existing, prefill) {
         await repointStubs(job);
         job.deleted = true;
         await store.putJob(job);
-        if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+        sync.pushSoon(job).catch(() => {});
         render('jobs');
       },
     }, 'Delete job + calendar event') : null,
@@ -1856,7 +1852,7 @@ async function pickMatch(p, uploaded, ocrText) {
               ocr_text_excerpt: (ocrText || '').slice(0, 2000),
             });
             await store.putJob(job);
-            if (auth.isConnected()) sync.pushJob(job).catch(() => {});
+            sync.pushSoon(job).catch(() => {});
           }
           log('stubSplitSaved', { check: p.check_no || '', jobs: [chosen.project, chosen2.project], amts: [amt1, amt2] });
           clearPendingScan();
@@ -1985,7 +1981,7 @@ async function pickMatch(p, uploaded, ocrText) {
         });
         const stubsForToast = (await store.allStubs()).filter(s => s.matched_job_id === job.id && s.id !== stubRec.id);
         await store.putStub(stubRec);
-        if (auth.isConnected()) sync.pushJob(job).catch(e => toast('Sync: ' + e.message, 5000));
+        sync.pushSoon(job).catch(e => { if (e.code !== 'NEEDS_CONNECT') toast('Sync: ' + e.message, 5000); });
         clearPendingScan();
         toast(existingStub
           ? `Check #${p.check_no} was already on file — record updated, not duplicated.`
@@ -2126,7 +2122,7 @@ async function settingsView() {
             cals.map(c => h('div', {
               class: 'candidate' + (c.id === s.calendarId ? ' best' : ''),
               onclick: () => {
-                saveSettings({ calendarId: c.id, calendarName: c.summary, lastCalPull: '' });
+                saveSettings({ calendarId: c.id, calendarName: c.summary, calendarChosenAt: store.now(), lastCalPull: '' });
                 sync.publishCalendarChoice().catch(() => {});
                 toast(`Syncing with "${c.summary}".`);
                 render('settings');
@@ -2174,10 +2170,7 @@ async function settingsView() {
           j.calendar_event_ids = [];
           await store.putJob(j);
           log('jobRestored', { project: j.project });
-          if (auth.isConnected()) {
-            sync.pushJob(j).catch(() => {});
-            sync.scheduleMirror();
-          }
+          sync.pushSoon(j).catch(() => {});
           toast(`"${j.project}" restored.`);
           render('settings');
         },
@@ -2243,6 +2236,7 @@ async function settingsView() {
           for (const [name, fn] of [
             ['sheet pull', () => sync.pullSheet()],
             ['calendar', () => sync.pullCalendar()],
+            ['calendar updates', () => sync.pushDirty()],
             ['sheet upload', () => sync.mirrorSheet()],
           ]) {
             try { await fn(); } catch (e) {
@@ -2333,7 +2327,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v102';
+const APP_VERSION = 'v103';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2502,7 +2496,13 @@ async function pushDiagnostics(force = false) {
   } catch (e) { log('diagUpErr', { msg: String(e.message).slice(0, 120) }); }
 }
 
-async function backgroundSync() {
+// One sync at a time: the 5-minute timer, tab refocus and reconnect can all
+// fire together.
+let syncInFlight = null;
+function backgroundSync() {
+  return syncInFlight ||= runSync().finally(() => { syncInFlight = null; });
+}
+async function runSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
   try {
     await auth.token();               // silent refresh if possible
@@ -2512,16 +2512,24 @@ async function backgroundSync() {
   }
   // Each stage runs even when an earlier one fails — a calendar hiccup must
   // never strand this device's data outside the sheet.
+  // ORDER MATTERS: merge the sheet BEFORE reading the calendar. A device
+  // holding an older copy of a job used to see another device's calendar
+  // push as "the user edited the event", stamp its stale copy as newest and
+  // overwrite the real edit everywhere.
   const errs = [];
   for (const [name, fn] of [
+    ['pullSheet', () => sync.pullSheet()],
     ['calendarChoice', () => sync.syncCalendarChoice()],
     ['pullCalendar', () => sync.pullCalendar()],
-    ['pullSheet', () => sync.pullSheet()],
+    ['pushDirty', () => sync.pushDirty()],
     ['pushUnsynced', () => sync.pushUnsynced()],
     // Upload as well as download: a job created while this device was
     // offline/disconnected must still reach the sheet eventually.
     ['mirrorSheet', () => sync.mirrorSheet()],
   ]) {
+    // Without a fresh sheet merge this device may hold stale jobs — don't let
+    // it interpret calendar changes against them.
+    if (name === 'pullCalendar' && errs.includes('pullSheet')) continue;
     try { await fn(); } catch (e) {
       errs.push(name);
       log('sync:' + name, { ok: false, code: e.code || '', msg: String(e.message).slice(0, 200) });

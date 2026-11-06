@@ -36,7 +36,7 @@ const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name'
   'deductions', 'total_deductions',
   'created_at', 'updated_at',
   // Appended columns only (positional history; reads are header-mapped).
-  'memo', 'work_dates'];
+  'memo', 'work_dates', 'deleted'];
 
 const JSON_COLS = ['earnings', 'deductions', 'gear_invoices'];
 const toRow = (cols, rec) => cols.map(c => {
@@ -112,17 +112,23 @@ export async function syncCalendarChoice() {
   const s = settings();
   if (!s.sheetId) return;
   const props = await g.getFileProps(s.sheetId);
-  if (!s.calendarId && props.calendarId) {
-    saveSettings({ calendarId: props.calendarId, calendarName: props.calendarName || '', lastCalPull: '' });
+  const remoteAt = props.calendarChosenAt || '';
+  const localAt = s.calendarChosenAt || '';
+  if (props.calendarId && props.calendarId !== s.calendarId && (!s.calendarId || remoteAt > localAt)) {
+    // Another device picked (or re-picked) the calendar more recently.
+    saveSettings({ calendarId: props.calendarId, calendarName: props.calendarName || '',
+      calendarChosenAt: remoteAt, lastCalPull: '' });
     log('calendarAdopted', { name: props.calendarName || '' });
-  } else if (s.calendarId && !props.calendarId) {
-    await g.setFileProps(s.sheetId, { calendarId: s.calendarId, calendarName: s.calendarName || '' });
+  } else if (s.calendarId && (!props.calendarId || (props.calendarId !== s.calendarId && localAt > remoteAt))) {
+    await publishCalendarChoice();
   }
 }
 export async function publishCalendarChoice() {
   const s = settings();
   if (s.sheetId && s.calendarId) {
-    await g.setFileProps(s.sheetId, { calendarId: s.calendarId, calendarName: s.calendarName || '' });
+    const at = s.calendarChosenAt || store.now();
+    if (!s.calendarChosenAt) saveSettings({ calendarChosenAt: at });
+    await g.setFileProps(s.sheetId, { calendarId: s.calendarId, calendarName: s.calendarName || '', calendarChosenAt: at });
   }
 }
 
@@ -133,7 +139,12 @@ export function scheduleMirror() {
   mirrorTimer = setTimeout(() => mirrorSheet().catch(e => console.warn('mirror failed', e)), 4000);
 }
 
-export async function mirrorSheet() {
+let mirrorInFlight = null;
+export function mirrorSheet() {
+  // One mirror at a time — overlapping clear+write pairs interleave.
+  return mirrorInFlight ||= mirrorNow().finally(() => { mirrorInFlight = null; });
+}
+async function mirrorNow() {
   const s = settings();
   if (!s.sheetId) return;
   // Merge remote rows first so a full-table write never clobbers a job that
@@ -143,11 +154,13 @@ export async function mirrorSheet() {
   await pullSheet();
   await store.dropStubHusks().catch(() => {});
   const jobs = await store.allJobs({ includeDeleted: true });
-  const stubs = await store.allStubs();
-  await g.clearRange(s.sheetId, 'Jobs!A2:ZZ');
+  const stubs = await store.allStubs({ includeDeleted: true });
+  // Clear the header row too: a leftover header cell from a device with more
+  // columns would sit over blank data and read back as "empty", wiping values.
+  await g.clearRange(s.sheetId, 'Jobs!A1:ZZ');
   await g.writeRange(s.sheetId, 'Jobs!A1',
     [JOB_COLS, ...jobs.map(j => toRow(JOB_COLS, j))]);
-  await g.clearRange(s.sheetId, 'Paystubs!A2:ZZ');
+  await g.clearRange(s.sheetId, 'Paystubs!A1:ZZ');
   await g.writeRange(s.sheetId, 'Paystubs!A1',
     [STUB_COLS, ...stubs.map(st => toRow(STUB_COLS, st))]);
   saveSettings({ lastSheetSync: store.now() });
@@ -168,10 +181,30 @@ export async function pullSheet() {
 }
 
 // ---------- Calendar: app -> calendar ----------
-function addDays(iso, n) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+const addDays = store.addDays;
+// Reminder events are timed; Google needs an explicit zone for recurring ones.
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
+
+// One event for the job, reconciled against what is tagged on the calendar:
+// keep the linked event (or adopt a tagged one), update it only if something
+// changed, remove any other tagged events, insert only when none exists.
+// Never trusts a remembered id blindly — a stale id used to insert a duplicate.
+async function reconcileSingle(s, job, base, start, endExclusive) {
+  const event = { ...base, start: { date: start }, end: { date: endExclusive } };
+  const tagged = (await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id))
+    .filter(e => e.status !== 'cancelled');
+  const keep = tagged.find(e => e.id === job.calendar_event_id) || tagged[0];
+  for (const ev of tagged) if (!keep || ev.id !== keep.id) await g.deleteEvent(s.calendarId, ev.id);
+  if (keep) {
+    if (keep.summary !== event.summary || (keep.description || '') !== event.description
+        || keep.start?.date !== start || keep.end?.date !== endExclusive) {
+      await g.patchEvent(s.calendarId, keep.id, event);
+    }
+    job.calendar_event_id = keep.id;
+  } else {
+    job.calendar_event_id = (await g.insertEvent(s.calendarId, event)).id;
+  }
+  job.calendar_event_ids = [];
 }
 
 export async function pushJobToCalendar(job) {
@@ -211,60 +244,45 @@ export async function pushJobToCalendar(job) {
     // block for a pay period.
     const contiguous = perDay.every((d, i) => i === 0 || d === addDays(perDay[i - 1], 1));
     if (contiguous && job.calendar_event_id && !(job.calendar_event_ids || []).length) {
-      // Fix the originally created event in place: resize it to the worked run.
-      const event = { ...base, start: { date: perDay[0] }, end: { date: addDays(perDay[perDay.length - 1], 1) } };
-      await g.patchEvent(s.calendarId, job.calendar_event_id, event)
-        .catch(async e => {
-          if (/404|410/.test(e.message)) {
-            const created = await g.insertEvent(s.calendarId, event);
-            job.calendar_event_id = created.id;
-          } else throw e;
-        });
+      // One multi-day event resized to the worked run.
+      await reconcileSingle(s, job, base, perDay[0], addDays(perDay[perDay.length - 1], 1));
     } else {
-      // Non-contiguous days can't be one event — replace with per-day events.
-      // Delete EVERY event tagged with this job (not just remembered ids) so
-      // strays from an interrupted earlier push can't accumulate.
-      await deleteAll();
-      try {
-        for (const ev of await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id)) {
-          await g.deleteEvent(s.calendarId, ev.id);
-        }
-      } catch (e) { log('pushSweepErr', String(e.message)); }
-      for (const d of perDay) {
-        const created = await g.insertEvent(s.calendarId,
-          { ...base, start: { date: d }, end: { date: addDays(d, 1) } });
-        job.calendar_event_ids.push(created.id);
+      // One event per worked day, RECONCILED against what is already on the
+      // calendar: keep the event for each wanted day (updating its text only
+      // if it changed), add missing days, remove extras. Deleting and
+      // rebuilding all of them on every save cost ~2 calls per day and let
+      // overlapping saves destroy each other's events.
+      const tagged = (await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id))
+        .filter(e => e.status !== 'cancelled');
+      const want = new Set(perDay);
+      const byDay = new Map();
+      for (const ev of tagged) {
+        const d = ev.start?.date;
+        const oneDay = d && ev.end?.date === addDays(d, 1);
+        if (oneDay && want.has(d) && !byDay.has(d)) byDay.set(d, ev);
+        else await g.deleteEvent(s.calendarId, ev.id);   // extra day, duplicate, or old span
       }
+      const ids = [];
+      for (const d of perDay) {
+        const ev = byDay.get(d);
+        if (ev) {
+          if (ev.summary !== base.summary || (ev.description || '') !== base.description) {
+            await g.patchEvent(s.calendarId, ev.id, { summary: base.summary, description: base.description });
+          }
+          ids.push(ev.id);
+        } else {
+          const created = await g.insertEvent(s.calendarId,
+            { ...base, start: { date: d }, end: { date: addDays(d, 1) } });
+          ids.push(created.id);
+        }
+        job.calendar_event_ids = ids.slice();   // persistable progress if a later call fails
+      }
+      job.calendar_event_id = '';
+      job.calendar_event_ids = ids;
     }
   } else {
     // Whole-span single event (jobs whose exact days aren't specified).
-    for (const id of job.calendar_event_ids || []) await g.deleteEvent(s.calendarId, id);
-    job.calendar_event_ids = [];
-    const event = { ...base, start: { date: job.start_date }, end: { date: addDays(job.end_date || job.start_date, 1) } };
-    if (job.calendar_event_id) {
-      await g.patchEvent(s.calendarId, job.calendar_event_id, event)
-        .catch(async e => {
-          if (/404|410/.test(e.message)) {
-            const created = await g.insertEvent(s.calendarId, event);
-            job.calendar_event_id = created.id;
-          } else throw e;
-        });
-    } else {
-      // Before inserting, adopt an event already tagged with this job — an
-      // interrupted earlier push may have created one we never remembered.
-      let created = null;
-      try {
-        const existing = await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id);
-        if (existing.length) {
-          created = existing[0];
-          await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
-          for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
-          log('adoptedEvent', { job: job.project, strays: existing.length - 1 });
-        }
-      } catch (e) { log('adoptCheckErr', String(e.message)); }
-      if (!created) created = await g.insertEvent(s.calendarId, event);
-      job.calendar_event_id = created.id;
-    }
+    await reconcileSingle(s, job, base, job.start_date, addDays(job.end_date || job.start_date, 1));
   }
   return job;
 }
@@ -303,13 +321,13 @@ async function upsertPartReminder(job, part, idField, due) {
     return;
   }
   // A due date in the past would never notify — nudge it to tomorrow.
-  const tomorrow = addDays(new Date().toISOString().slice(0, 10), 1);
+  const tomorrow = addDays(store.today(), 1);
   if (due < tomorrow) due = tomorrow;
   const event = {
     summary: `💰 Follow up: ${job.project || 'job'} ${part} unpaid`,
     description: `PayTrack alert — ${jobToNote(job)}`,
-    start: { dateTime: `${due}T09:00:00` },
-    end: { dateTime: `${due}T09:30:00` },
+    start: { dateTime: `${due}T09:00:00`, timeZone: TZ },
+    end: { dateTime: `${due}T09:30:00`, timeZone: TZ },
     reminders: {
       useDefault: false,
       overrides: [{ method: 'email', minutes: 1 }, { method: 'popup', minutes: 1 }],
@@ -345,7 +363,7 @@ async function upsertPartReminder(job, part, idField, due) {
 // the day after wrap and disappears the moment the invoice is marked sent.
 async function upsertInvoiceReminder(job) {
   const s = settings();
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = store.today();
   // Weekly gear invoices nag once their week has ended and they're not sent.
   const gearUnsent = (job.gear_invoices || [])
     .filter(i => i.status === 'unsent' && (i.end || i.start) && (i.end || i.start) <= todayIso);
@@ -372,8 +390,8 @@ async function upsertInvoiceReminder(job) {
   const event = {
     summary: `Send invoice: ${job.project || 'job'}`,
     description: `PayTrack — invoice not sent yet.${gearNote} Mark it "Sent" in the app to stop this daily reminder.`,
-    start: { dateTime: `${due}T09:00:00` },
-    end: { dateTime: `${due}T09:15:00` },
+    start: { dateTime: `${due}T09:00:00`, timeZone: TZ },
+    end: { dateTime: `${due}T09:15:00`, timeZone: TZ },
     recurrence: ['RRULE:FREQ=DAILY'],
     reminders: {
       useDefault: false,
@@ -438,18 +456,42 @@ export function pushJob(job) {
 
 async function pushJobNow(id, fallback) {
   const job = (await store.getJob(id)) || fallback;
+  // Only the calendar ids are written back (onto the freshest stored copy,
+  // stamp untouched): a save or merge that lands while the network calls
+  // run must not be overwritten by this push's starting snapshot.
   try {
     await pushJobToCalendar(job);
   } finally {
-    await store.putJob(job, { silent: true });
+    await store.saveJobIds(job);
   }
   try {
     await syncReminder(job);
   } finally {
-    await store.putJob(job, { silent: true });
+    await store.saveJobIds(job);
   }
   scheduleMirror();
   return job;
+}
+
+// Jobs whose calendar push has not succeeded yet (expired login, offline,
+// API error) — remembered across reloads and retried on every sync, deleted
+// jobs included, so an edit made while disconnected still reaches the
+// calendar and its reminders.
+const DIRTY_KEY = 'paytrack.dirtyPush';
+const dirtyIds = () => { try { return JSON.parse(localStorage.getItem(DIRTY_KEY) || '[]'); } catch { return []; } };
+const setDirty = (ids) => { try { localStorage.setItem(DIRTY_KEY, JSON.stringify([...new Set(ids)].slice(-200))); } catch {} };
+export function pushSoon(job) {
+  setDirty([...dirtyIds(), job.id]);
+  return pushJob(job).then((r) => { setDirty(dirtyIds().filter(x => x !== job.id)); return r; });
+}
+export async function pushDirty() {
+  if (!settings().calendarId) return;
+  for (const id of dirtyIds()) {
+    const job = await store.getJob(id);
+    if (!job) { setDirty(dirtyIds().filter(x => x !== id)); continue; }
+    await pushJob(job).then(() => setDirty(dirtyIds().filter(x => x !== id)))
+      .catch(e => log('dirtyPushErr', { project: job.project, msg: String(e.message).slice(0, 120) }));
+  }
 }
 
 // One-time sweep: collapse every duplicated PayTrack event on the calendar.
@@ -458,6 +500,9 @@ async function pushJobNow(id, fallback) {
 export async function cleanupCalendarDuplicates(onProgress) {
   const s = settings();
   if (!s.calendarId) throw new Error('Pick a calendar in Setup first.');
+  // Work from merged data: a device that sat idle may still think a job is
+  // deleted that another device restored.
+  await pullSheet();
   const jobs = await store.allJobs({ includeDeleted: true });
   let removed = 0, i = 0;
   for (const job of jobs) {
@@ -494,10 +539,10 @@ export async function cleanupCalendarDuplicates(onProgress) {
           job.calendar_event_ids = keepIds;
           job.calendar_event_id = '';
         } else if (keepIds.length >= 1 && !(job.work_dates || []).length) {
-          job.calendar_event_id = keepIds[0];
+          job.calendar_event_id = keepIds.includes(job.calendar_event_id) ? job.calendar_event_id : keepIds[0];
           job.calendar_event_ids = [];
         }
-        await store.putJob(job, { silent: true });
+        await store.saveJobIds(job);
       }
     }
     let rem = [];
@@ -545,7 +590,8 @@ export async function pullCalendar() {
     updatedMin: since, showDeleted: 'true', singleEvents: 'true',
     timeMin: new Date(Date.now() - 400 * 86400000).toISOString(),
   });
-  let items;
+  let items, skipped = false;
+  const pullStarted = new Date(Date.now() - 120000).toISOString();
   try {
     ({ items } = await g.listEvents(s.calendarId, params(s.lastCalPull || recent())));
   } catch (e) {
@@ -565,21 +611,19 @@ export async function pullCalendar() {
       if (!job || job.deleted) continue;
       if ((ev.updated || '') <= (job.updated_at || '')) continue;  // our own push
       if (ev.status === 'cancelled') {
-        // Only a CURRENTLY-linked event's cancellation means the user removed
-        // the job from the calendar. The app itself cancels stale tagged
-        // events whenever a push replaces them — treating those as user
-        // deletions created a loop that re-tombstoned restored jobs.
+        // Only a CURRENTLY-linked event's cancellation can mean the user
+        // removed the job from the calendar. The app itself cancels stale
+        // tagged events whenever a push replaces them.
         const known = ev.id === job.calendar_event_id
           || (job.calendar_event_ids || []).includes(ev.id);
         if (!known) continue;
         // Delete the job only when NONE of its events survive. If live tagged
-        // events remain (a push rebuilt them, or one day was removed), relink
-        // the job to those instead of throwing the whole job away.
+        // events remain, relink to those instead of discarding the job.
         let live = [];
         try {
           live = (await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id))
             .filter(e => e.status !== 'cancelled');
-        } catch (e) { log('relinkListErr', String(e.message)); continue; }
+        } catch (e) { log('relinkListErr', String(e.message)); skipped = true; continue; }
         if (live.length) {
           if ((job.calendar_event_ids || []).length || live.length > 1) {
             job.calendar_event_ids = live.map(e => e.id);
@@ -588,28 +632,34 @@ export async function pullCalendar() {
             job.calendar_event_id = live[0].id;
             job.calendar_event_ids = [];
           }
+          await store.saveJobIds(job);
           log('calRelinked', { project: job.project, events: live.length });
         } else {
-          job.deleted = true;
+          // A real change: stamp it so the deletion syncs everywhere.
+          const fresh = (await store.getJob(job.id)) || job;
+          fresh.deleted = true;
+          await store.putJob(fresh, { silent: true });
+          await syncReminder(fresh).catch(() => {});
+          await store.saveJobIds(fresh);
           log('calDeletedJob', { project: job.project });
         }
+        continue;
       }
-      else {
-        // Jobs with specific worked days have several events; a single event's
-        // dates must not overwrite the job's overall range.
-        if (!(job.work_dates?.length)) {
-          if (ev.start?.date) job.start_date = ev.start.date;
-          if (ev.end?.date) job.end_date = addDays(ev.end.date, -1);
-        }
-        const note = parseJobNote(ev.description || '');
-        if (note.wages_status) job.wages_status = note.wages_status;
-        if (note.gear_status) job.gear_status = note.gear_status;
-        if (note.rate_amount) { job.rate_amount = note.rate_amount; job.rate_hours = note.rate_hours; }
-        if (note.gear_total) job.gear_total = note.gear_total;
-      }
-      await store.putJob(job, { silent: true });
-      await syncReminder(job).catch(() => {});
-      await store.putJob(job, { silent: true });
+      // A live event changed. The ONLY thing taken from the calendar is a
+      // date move of a whole-span event (the user dragged it). Pay status,
+      // rates and gear are never read back from the event's note: the note
+      // is generated by the app, so an older device re-reading another
+      // device's push used to overwrite newer data with what it parsed.
+      if (job.work_dates?.length || !ev.start?.date || !ev.end?.date) continue;
+      const start = ev.start.date, end = addDays(ev.end.date, -1);
+      if (start === job.start_date && end === (job.end_date || job.start_date)) continue;
+      const fresh = (await store.getJob(job.id)) || job;
+      fresh.start_date = start;
+      fresh.end_date = end;
+      await store.putJob(fresh, { silent: true });
+      await syncReminder(fresh).catch(() => {});
+      await store.saveJobIds(fresh);
+      log('calMovedJob', { project: job.project, start, end });
     } else if (ev.status !== 'cancelled'
         && !ev.extendedProperties?.private?.paytrackReminderFor
         && looksLikeJob(ev.summary, ev.description)) {
@@ -620,7 +670,10 @@ export async function pullCalendar() {
       if ((q.start || '') >= cutoff) await store.queueImport(q);
     }
   }
-  saveSettings({ lastCalPull: store.now() });
+  // Next pull starts from just before THIS one began (events changed while
+  // we were processing must not be missed); not advanced if anything was
+  // skipped on an error.
+  if (!skipped) saveSettings({ lastCalPull: pullStarted });
   store.notifyChanged();
 }
 

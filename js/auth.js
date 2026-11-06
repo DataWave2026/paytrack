@@ -50,11 +50,22 @@ function ensureClient() {
   return tokenClient;
 }
 
+// The token client has ONE callback slot. A second request replaces it, so
+// the first promise would never settle (and everything awaiting it — syncs,
+// pushes — would hang until reload). Each new request rejects the pending
+// one, and every request times out.
+let pendingReject = null;
 function requestToken(promptMode) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, rejectRaw) => {
+    if (pendingReject) pendingReject(new Error('superseded by a newer sign-in request'));
+    const timer = setTimeout(() => reject(new Error('sign-in timed out')), 90000);
+    const reject = (e) => { clearTimeout(timer); if (pendingReject === reject) pendingReject = null; rejectRaw(e); };
+    pendingReject = reject;
     const client = ensureClient();
     client.callback = (resp) => {
-      if (resp.error) return reject(new Error(resp.error_description || resp.error));
+      clearTimeout(timer);
+      if (pendingReject === reject) pendingReject = null;
+      if (resp.error) return rejectRaw(new Error(resp.error_description || resp.error));
       accessToken = resp.access_token;
       expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
       try { localStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken, expiresAt })); } catch {}
@@ -132,6 +143,12 @@ export async function token() {
   const e = new Error('Google connection expired — tap the dot in the top bar to reconnect.');
   e.code = 'NEEDS_CONNECT';
   throw e;
+}
+
+// The server rejected a token we believed valid (revoked / invalidated):
+// forget it so the next refresh really fetches a new one.
+export function invalidate() {
+  expiresAt = 0;
 }
 
 export function disconnect() {

@@ -1,6 +1,6 @@
 // Offline shell: NETWORK-FIRST for app files (so updates appear on the next
 // load), cache fallback when offline. Google APIs are never cached.
-const CACHE = 'paytrack-v102';
+const CACHE = 'paytrack-v103';
 const SHELL = [
   '.', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/auth.js', 'js/config.js', 'js/google.js', 'js/match.js',
@@ -9,7 +9,7 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -31,7 +31,9 @@ self.addEventListener('fetch', (e) => {
       if (resp.ok) {
         const copy = resp.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
+        return resp;
       }
-      return resp;
+      // Server error (5xx/404 from the host): prefer the cached copy.
+      return caches.match(e.request, { ignoreSearch: true }).then(hit => hit || resp);
     }).catch(() => caches.match(e.request, { ignoreSearch: true })));
 });

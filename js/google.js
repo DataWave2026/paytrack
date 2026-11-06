@@ -1,6 +1,6 @@
 // Thin REST helpers over Google Drive / Sheets / Calendar. No SDKs, no
 // model APIs — plain fetch with the user's own OAuth token.
-import { token, trySilentRefresh } from './auth.js';
+import { token, trySilentRefresh, invalidate } from './auth.js';
 
 async function call(url, { method = 'GET', json, body, headers = {}, raw = false } = {}, _retried = false) {
   const t = await token();
@@ -15,6 +15,7 @@ async function call(url, { method = 'GET', json, body, headers = {}, raw = false
   // Token died mid-session: refresh silently and retry once instead of
   // surfacing "disconnected".
   if (resp.status === 401 && !_retried) {
+    invalidate();   // otherwise the "refresh" would hand back the same dead token
     if (await trySilentRefresh()) {
       return call(url, { method, json, body, headers, raw }, true);
     }

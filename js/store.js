@@ -46,6 +46,20 @@ function getAll(storeName) {
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 export const now = () => new Date().toISOString();
 
+// Calendar dates are plain YYYY-MM-DD strings. "Today" is the LOCAL date
+// (toISOString() is UTC — after ~4pm Pacific it is already tomorrow), and day
+// arithmetic runs in UTC so it is correct in every timezone.
+export function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+export function addDays(iso, n) {
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;   // never throw on a bad date
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 // Gear math shared by the job form and the importer.
 export function spanDays(j) {
   if (j.days_worked) return j.days_worked;
@@ -114,6 +128,28 @@ export async function putJob(job, { silent = false, keepStamp = false } = {}) {
   return job;
 }
 
+// Calendar ids are derived state. Persist ONLY them, onto the freshest stored
+// copy, without touching the edit stamp: a push that started before a newer
+// save (here or merged from another device) must not write its old snapshot
+// back over it or outrank it.
+export const ID_FIELDS = ['calendar_event_id', 'calendar_event_ids', 'reminder_event_id',
+  'gear_reminder_event_id', 'invoice_reminder_event_id'];
+export async function saveJobIds(job) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction('jobs', 'readwrite');
+    const st = t.objectStore('jobs');
+    const g = st.get(job.id);
+    g.onsuccess = () => {
+      const fresh = g.result || job;
+      for (const k of ID_FIELDS) if (job[k] !== undefined) fresh[k] = job[k];
+      st.put(fresh);
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
 // Merge a record from a remote source (Sheet); newest updated_at wins —
 // EXCEPT deletion, which is a tombstone: once either side has deleted a
 // record, no sync may resurrect it.
@@ -122,14 +158,25 @@ export async function putJob(job, { silent = false, keepStamp = false } = {}) {
 // (highest gross). Runs at boot AND inside every sheet mirror — stub deletes
 // have no tombstones, so pull-before-write would otherwise re-import them.
 export async function dropStubHusks() {
+  const all = await allStubs();
+  let n = 0;
   const grps = {};
-  for (const s of await allStubs()) {
+  for (const s of all) {
     if (!s.check_no) (grps[`${s.matched_job_id}|${s.check_date}`] ||= []).push(s);
   }
-  let n = 0;
   for (const grp of Object.values(grps)) {
     if (grp.length < 2) continue;
     grp.sort((a, b) => (b.gross || 0) - (a.gross || 0));
+    for (const d of grp.slice(1)) { await deleteStub(d.id); n++; }
+  }
+  // The same check recorded twice on the same job: keep the newest.
+  const dup = {};
+  for (const s of all) {
+    if (s.check_no && String(s.check_no).length >= 3) (dup[`${s.check_no}|${s.matched_job_id || ''}`] ||= []).push(s);
+  }
+  for (const grp of Object.values(dup)) {
+    if (grp.length < 2) continue;
+    grp.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
     for (const d of grp.slice(1)) { await deleteStub(d.id); n++; }
   }
   return n;
@@ -150,6 +197,17 @@ export async function mergeRecord(storeName, rec) {
       // writing device's app version didn't know is absent from rec and must
       // not wipe the local value.
       if ((rec.updated_at || '') > (local.updated_at || '')) s.put({ ...local, ...rec });
+      else if (storeName === 'jobs' && rec.updated_at === local.updated_at) {
+        // Same edit on both sides: adopt calendar ids the other device stored
+        // (they are saved without bumping the stamp) when we have none.
+        let changed = false;
+        for (const k of ID_FIELDS) {
+          const mine = local[k], theirs = rec[k];
+          const empty = (v) => v === undefined || v === '' || (Array.isArray(v) && !v.length);
+          if (empty(mine) && !empty(theirs)) { local[k] = theirs; changed = true; }
+        }
+        if (changed) s.put(local);
+      }
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
@@ -160,9 +218,10 @@ export async function mergeRecord(storeName, rec) {
 // {id, drive_file_id, photo_name, vendor, project_name, employer,
 //  period_start, period_end, hourly_rates, hours, gross, net, check_no,
 //  check_date, matched_job_id, ocr_text_excerpt, created_at, updated_at}
-export async function allStubs() {
+export async function allStubs({ includeDeleted = false } = {}) {
   const stubs = await getAll('stubs');
-  return stubs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  return stubs.filter(s => includeDeleted || !s.deleted)
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 }
 
 export async function putStub(stub, { keepStamp = false } = {}) {
@@ -173,8 +232,19 @@ export async function putStub(stub, { keepStamp = false } = {}) {
   return stub;
 }
 
+// Deleting a stub leaves a tombstone (deleted: true) that syncs like any
+// other edit — a plain local delete was re-imported from the sheet by the
+// next pull, so removed duplicates kept coming back.
 export async function deleteStub(id) {
-  await tx('stubs', 'readwrite', s => s.delete(id));
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const t = db.transaction('stubs', 'readwrite');
+    const st = t.objectStore('stubs');
+    const g = st.get(id);
+    g.onsuccess = () => { if (g.result) st.put({ ...g.result, deleted: true, updated_at: now() }); };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
   changed();
 }
 
