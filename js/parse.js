@@ -272,6 +272,7 @@ function parseGenericInto(p, text) {
     // ("T-MOBILE #CO-37509") — the label block only yields the job TYPE.
     const jl = ls.find(l => /#\s*[A-Z]{2,3}-\d{3,}/.test(l) && /[A-Za-z]{2}/.test(l.replace(/#.*$/, '')));
     if (jl) p.project_name = jl.replace(/\s*#.*$/, '').trim();
+    else if (LABELY.test(p.project_name)) p.project_name = '';   // a label is never a title
   }
   if (!p.payee) {
     // Attached-check portion first: "TO THE ORDER OF" then the name (the
