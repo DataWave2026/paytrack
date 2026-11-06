@@ -2302,7 +2302,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v106';
+const APP_VERSION = 'v107';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2471,6 +2471,25 @@ async function pushDiagnostics(force = false) {
   } catch (e) { log('diagUpErr', { msg: String(e.message).slice(0, 120) }); }
 }
 
+// A job that is still running, whose weekly checks leave worked days
+// uncovered, cannot be fully paid. If something marked it 'paid' (an older
+// app version misreading a calendar note did exactly this), put it back to
+// 'partial'. A wrapped job is left alone — a manual "paid" stands there.
+async function healStatuses() {
+  const stubsByJob = {};
+  for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
+  for (const j of await store.allJobs()) {
+    if (j.wages_status !== 'paid' || j.job_status === 'hold' || isWrapped(j)) continue;
+    const cov = wageCoverage(j, stubsByJob[j.id]);
+    if (cov.tracked && cov.unpaid.length) {
+      j.wages_status = 'partial';
+      await store.putJob(j, { silent: true });
+      sync.pushSoon(j).catch(() => {});
+      log('healedStatus', { project: j.project, unpaid: cov.unpaid.length });
+    }
+  }
+}
+
 // One sync at a time: the 5-minute timer, tab refocus and reconnect can all
 // fire together.
 let syncInFlight = null;
@@ -2491,9 +2510,15 @@ async function runSync() {
   // holding an older copy of a job used to see another device's calendar
   // push as "the user edited the event", stamp its stale copy as newest and
   // overwrite the real edit everywhere.
+  // An open tab keeps running the code it loaded. Ask the browser to check
+  // for a new version on every sync, so a long-lived tab updates itself
+  // (the page reloads when a new version takes over) instead of running —
+  // and syncing with — old logic for days.
+  navigator.serviceWorker?.getRegistration?.().then(r => r && r.update()).catch(() => {});
   const errs = [];
   for (const [name, fn] of [
     ['pullSheet', () => sync.pullSheet()],
+    ['healStatuses', () => healStatuses()],
     ['calendarChoice', () => sync.syncCalendarChoice()],
     ['pullCalendar', () => sync.pullCalendar()],
     ['pushDirty', () => sync.pushDirty()],
