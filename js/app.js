@@ -79,12 +79,21 @@ function isOverdue(job) {
 let currentView = 'home';
 const views = { home, jobs, stub, review, settings: settingsView };
 
+// The job editor, owed screen and scan screens draw over the current view
+// without being views. While one is open, background data changes (a sync
+// landing, a push finishing) must not re-render the list over it and throw
+// away what the user is typing.
+let overlayOpen = false;
+let allJobsOpen = false;
 async function render(name) {
+  const keepScroll = !name;          // a background refresh keeps the position
+  if (name) overlayOpen = false;     // explicit navigation closes any overlay
   currentView = name || currentView;
   document.querySelectorAll('#tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === currentView));
+  const top = viewEl.scrollTop;
   viewEl.replaceChildren(await views[currentView]());
-  viewEl.scrollTop = 0;
+  viewEl.scrollTop = keepScroll ? top : 0;
 }
 
 document.getElementById('tabs').addEventListener('click', (e) => {
@@ -105,7 +114,7 @@ document.addEventListener('click', () => {
   lastRefreshTry = now;
   auth.trySilentRefresh().then(ok => { if (ok) backgroundSync(); });
 }, true);
-store.bus.addEventListener('change', () => render());
+store.bus.addEventListener('change', () => { if (!overlayOpen) render(); });
 
 // ---------- home ----------
 async function home() {
@@ -225,7 +234,7 @@ function statusBadge(kind, status) {
 function jobRow(job, stubsByJob) {
   const rate = job.rate_amount && job.rate_hours
     ? (hideMoney ? MASK : `$${job.rate_amount}/${job.rate_hours}`)
-    : job.rate_text || '';
+    : (hideMoney && /\$/.test(job.rate_text || '') ? MASK : (job.rate_text || ''));
   const w = stubsByJob ? jobWages(job, stubsByJob) : null;
   const amt = w ? `${w.actual ? '' : '~'}${fmt$(w.amount)} wages` : '';
   return h('div', { class: 'job', onclick: () => render('jobs').then(() => editJob(job)) },
@@ -320,7 +329,7 @@ async function jobs() {
     jobs.length ? cards : h('div', { class: 'card mt' }, h('p', { class: 'muted' }, 'Nothing yet.')),
     jobs.length ? (() => {
       const gs = sumJobs(jobs, stubsByJob);
-      return h('details', { class: 'card' },
+      return h('details', { class: 'card', ...(allJobsOpen ? { open: '' } : {}), ontoggle: (e) => { allJobsOpen = e.target.open; } },
         h('summary', {}, `All jobs (${jobs.length}) — ${gs.est ? '~' : ''}${fmt$(gs.total)}`),
         jobs.map(j => jobRow(j, stubsByJob)),
         listTotalsLine(jobs, stubsByJob, 'Grand total (excl. holds)'));
@@ -353,7 +362,7 @@ const addDaysStr = store.addDays;   // timezone-proof day arithmetic
 // of days rendered (0/1 = no picker needed).
 // `paidSet` (optional): days a wage check has already paid — drawn solid
 // with a $ mark, still tappable like any other day.
-function fillDayChips(box, start, end, sel, counter, travelSel, paidSet) {
+function fillDayChips(box, start, end, sel, counter, travelSel, paidSet, onChange) {
   box.replaceChildren();
   if (!start) return 0;
   const days = [];
@@ -380,6 +389,7 @@ function fillDayChips(box, start, end, sel, counter, travelSel, paidSet) {
       }
       b.classList.toggle('travel', travelSel.has(d));
       upd();
+      if (onChange) onChange();
     };
     const b = h('button', {
       type: 'button',
@@ -389,11 +399,14 @@ function fillDayChips(box, start, end, sel, counter, travelSel, paidSet) {
       onclick: () => {
         if (lpFired) { lpFired = false; return; }   // long-press already handled
         if (sel.has(d)) {
+          if (paidSet?.has(d) && travelSel
+              && !confirm('A check already paid this day. Remove it from the job anyway?')) return;
           sel.delete(d);
           if (travelSel?.has(d)) { travelSel.delete(d); b.classList.remove('travel'); }
         } else sel.add(d);
         b.classList.toggle('on');
         upd();
+        if (onChange) onChange();
       },
       // Travel-day marking: right-click on desktop, press-and-hold on phone.
       oncontextmenu: (e) => {
@@ -467,9 +480,14 @@ function listTotalsLine(list, stubsByJob, label = 'Total') {
 async function repointStubs(job) {
   const stubs = (await store.allStubs()).filter(s => s.matched_job_id === job.id);
   if (!stubs.length) return;
-  const sq = (s) => (s || '').replace(/\s|\(.*\)/g, '').toLowerCase();
-  const target = (await store.allJobs()).find(o => o.id !== job.id && sq(o.project) === sq(job.project));
+  // Only an EXACTLY same-named job is a candidate ("Riverton (Week 1)" is not
+  // "Riverton (Week 4)"), and only if the user says so. Otherwise the records
+  // stay with the removed job, where Restore brings them back.
+  const nm = (v) => (v || '').trim().toLowerCase();
+  if (!nm(job.project)) return;
+  const target = (await store.allJobs()).find(o => o.id !== job.id && nm(o.project) === nm(job.project));
   if (!target) return;
+  if (!confirm(`This job has ${stubs.length} payment record${stubs.length === 1 ? '' : 's'}. Move ${stubs.length === 1 ? 'it' : 'them'} to the other "${target.project}" job?\n\nCancel = keep them with this removed job (Restore brings them back).`)) return;
   let gearMoved = 0;
   for (const s of stubs) {
     s.matched_job_id = target.id;
@@ -477,8 +495,8 @@ async function repointStubs(job) {
     await store.putStub(s);
   }
   if (gearMoved > 0) {
-    if (target.gear_total === null || target.gear_total === undefined) target.gear_total = gearMoved;
-    if (target.gear_status === 'na' || target.gear_status === 'unpaid') target.gear_status = 'paid';
+    const prior = gearReceived((await store.allStubs()).filter(s => s.matched_job_id === target.id)) - gearMoved;
+    applyGearPayment(target, gearMoved, Math.max(0, prior));
     if (!target.gear_paid_via) target.gear_paid_via = stubs.find(s => s.paid_to)?.paid_to || '';
     await store.putJob(target, { silent: true });
     sync.pushSoon(target).catch(() => {});
@@ -495,6 +513,7 @@ function nextPartName(name) {
 }
 
 async function editJob(existing, prefill) {
+  overlayOpen = true;
   const job = existing ? { ...existing } : (prefill || store.blankJob());
   let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
@@ -510,6 +529,18 @@ async function editJob(existing, prefill) {
   });
 
   const workSel = new Set(job.work_dates || []);
+  // A job with no specific days means "the whole range". Show that as every
+  // day selected, and only convert it to specific days once the user
+  // actually taps a day (tapping one day used to silently turn a 5-day job
+  // into a 1-day job).
+  const wholeSpan = !!existing && !(job.work_dates || []).length;   // new jobs: tap the days worked, as before
+  let chipsTouched = false;
+  const fillSpan = () => {
+    workSel.clear();
+    if (!job.start_date) return;
+    for (let d = job.start_date, i = 0; d <= (job.end_date || job.start_date) && i < 92; d = addDaysStr(d, 1), i++) workSel.add(d);
+  };
+  if (wholeSpan) fillSpan();
   const travelSel = new Set(job.travel_dates || []);
   // Days already paid by this job's wage checks — marked on the calendar.
   const paidDays = existing
@@ -524,7 +555,9 @@ async function editJob(existing, prefill) {
       (paidDays.size ? 'Solid with $ = paid by a check. ' : '')
       + 'Right-click a day (press and hold on phone) to mark it as a travel day — estimated at the 4-hour minimum until the stub arrives.'));
   const updateWorkChips = () => {
-    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel, paidDays);
+    if (wholeSpan && !chipsTouched) fillSpan();
+    const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel, paidDays,
+      () => { chipsTouched = true; });
     workWrap.style.display = n > 1 ? '' : 'none';
   };
 
@@ -536,7 +569,10 @@ async function editJob(existing, prefill) {
   // Hourly-deal helper: hourly rate x guaranteed hours fills the pre-tax
   // guaranteed day total. 'straight' = hourly x hours (how the user's
   // productions quote it); 'union' = 1.5x after 8.
+  let gearTouched = false;
   let hourlyMode = 'straight';
+  if (job.rate_hourly && job.rate_hours > 8 && job.rate_amount
+      && Math.abs(job.rate_amount - job.rate_hourly * (8 + 1.5 * (job.rate_hours - 8))) < 1) hourlyMode = 'union';
   const rateAmountInput = input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' });
   const hourlyInput = input('rate_hourly', { type: 'number', inputmode: 'decimal', placeholder: '87' });
   const hourlyHint = h('p', { class: 'muted small' }, '');
@@ -552,7 +588,7 @@ async function editJob(existing, prefill) {
         ? `$${hr}/hr, 1.5x after 8: 8 + ${((hrs - 8) * 1.5).toFixed(1)} paid hrs)`
         : `$${hr}/hr x ${hrs} hrs)`);
   };
-  const hourlyModeSeg = segmented('hourlymode', 'straight',
+  const hourlyModeSeg = segmented('hourlymode', hourlyMode,
     [['straight', 'Straight x hrs'], ['union', '1.5x after 8']],
     v => { hourlyMode = v; hourlyUpdate(); });
 
@@ -656,7 +692,7 @@ async function editJob(existing, prefill) {
       h('label', {}, 'Weeks (multi-week job: creates Week 1, Week 2, … entries, each tracked separately)'),
       h('input', {
         type: 'number', inputmode: 'numeric', value: '1', min: '1', max: '26',
-        oninput: (e) => weeks = Math.max(1, parseInt(e.target.value, 10) || 1),
+        oninput: (e) => weeks = Math.min(26, Math.max(1, parseInt(e.target.value, 10) || 1)),
       })),
     h('label', {}, 'Wages / day ($)'),
     rateAmountInput,
@@ -683,7 +719,7 @@ async function editJob(existing, prefill) {
     h('label', {}, 'Gear payment'),
     segmented('gear', job.gear_status,
       [['na', 'No gear'], ['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid']],
-      v => job.gear_status = v),
+      v => { job.gear_status = v; gearTouched = true; }),
     h('label', {}, 'Gear paid to (can differ from wages)'),
     segmented('gearpaidvia', job.gear_paid_via || '',
       [['', 'Same as wages / not set'], ['me', 'Me'], ['company', 'My company']],
@@ -715,7 +751,7 @@ async function editJob(existing, prefill) {
         if (!job.project && !job.notes) return toast('Give the job at least a name.');
         if (job.end_date && job.start_date && job.end_date < job.start_date) job.end_date = job.start_date;
         if (weeks > 1 && !job.start_date) return toast('Multi-week jobs need a first day (of week 1).');
-        if (job.gear_status === 'na' && (job.gear_rate || job.gear_total)) job.gear_status = 'unpaid';
+        if (job.gear_status === 'na' && (job.gear_rate || job.gear_total) && !gearTouched) job.gear_status = 'unpaid';
         job.gear_invoices = gearInvs.filter(i => i.amount || i.start || i.end);
         if (job.gear_invoices.length) {
           // Weekly billing: status and total derive from the weeks.
@@ -728,9 +764,18 @@ async function editJob(existing, prefill) {
         const chosenDays = [...workSel]
           .filter(d => job.start_date && d >= job.start_date && d <= (job.end_date || job.start_date))
           .sort();
-        job.work_dates = chosenDays;
-        job.travel_dates = chosenDays.filter(d => travelSel.has(d));
-        if (chosenDays.length) job.days_worked = chosenDays.length;
+        if (wholeSpan && !chipsTouched) {
+          // Untouched whole-range job: stays whole-range, typed day count kept.
+          job.work_dates = [];
+          job.travel_dates = [];
+        } else {
+          job.work_dates = chosenDays;
+          job.travel_dates = chosenDays.filter(d => travelSel.has(d));
+          // The chips are the day count; clearing them all drops a stale count.
+          if (chosenDays.length) job.days_worked = chosenDays.length;
+          else if ((existing?.work_dates || []).length) job.days_worked = null;
+        }
+        const chosenForClones = job.work_dates;
 
         const toSave = [];
         if (!existing && weeks > 1) {
@@ -741,7 +786,8 @@ async function editJob(existing, prefill) {
               project: `${job.project} (Week ${k + 1})`,
               start_date: addDaysStr(job.start_date, 7 * k),
               end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
-              work_dates: chosenDays.map(d => addDaysStr(d, 7 * k)),
+              work_dates: chosenForClones.map(d => addDaysStr(d, 7 * k)),
+              expected_pay_date: k === 0 ? job.expected_pay_date : '',
               travel_dates: job.travel_dates.map(d => addDaysStr(d, 7 * k)),
               gear_invoices: job.gear_invoices.map(i => ({
                 ...i,
@@ -1009,6 +1055,7 @@ function owedDetail(j, stubsByJob) {
 // The owed screen: every job that owes money (optionally one month's), the
 // amount, and why. Opened from the Home owed figures.
 async function showOwed(month) {
+  overlayOpen = true;
   const jobsAll = (await store.allJobs()).filter(j => j.job_status !== 'hold');
   const stubsByJob = {};
   for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
@@ -1244,6 +1291,7 @@ function pendingScan() {
 function clearPendingScan() { try { localStorage.removeItem('paytrack.pendingScan'); } catch {} }
 
 async function runStubPipeline(file) {
+  overlayOpen = true;
   if (!auth.hasCredentials()) { toast('Connect Google in Setup first.'); return; }
   const stage = h('span', {}, ' Starting…');
   viewEl.replaceChildren(h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), stage));
@@ -1314,6 +1362,7 @@ async function runStubPipeline(file) {
 }
 
 function confirmStubForm(parsed, uploaded, ocrText) {
+  overlayOpen = true;
   const p = { ...parsed };
   // Auto-select who the check is made out to: the payee on the check vs the
   // two names saved in Setup -> Profile. No match = leave unset AND flag it.
@@ -1463,6 +1512,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
 }
 
 async function pickMatch(p, uploaded, ocrText) {
+  overlayOpen = true;
   // Other checks already on file — their paid days show on the day picker.
   // (A re-scan of this same check is excluded, so its own days aren't "paid".)
   const stubsOnFile = (await store.allStubs())
@@ -1963,10 +2013,14 @@ async function review() {
             let n = 0;
             for (const it of items) {
               if (!it || !it.summary || !it.start) continue;
+              // Only real ISO dates — a date in any other shape used to create a
+              // job that crashed Home and could not be opened.
+              const isoDay = (v) => /^\d{4}-\d{2}-\d{2}/.test(String(v || '')) ? String(v).slice(0, 10) : '';
+              if (!isoDay(it.start)) continue;
               await store.queueImport({
                 id: String(it.id || store.uid()), summary: String(it.summary),
                 description: String(it.description || ''),
-                start: String(it.start), end: String(it.end || it.start),
+                start: isoDay(it.start), end: isoDay(it.end) || isoDay(it.start),
                 no_cal: !!it.no_cal,
               });
               n++;
@@ -2248,7 +2302,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v105';
+const APP_VERSION = 'v106';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
