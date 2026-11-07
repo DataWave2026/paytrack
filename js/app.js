@@ -6,7 +6,7 @@ import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub, matchDebug } from './match.js';
 import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
-  gearReceived, owedFor, paidEvents, applyGearPayment, baseRateOf } from './money.js';
+  gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf } from './money.js';
 import { log, dump, clearLog } from './log.js';
 
 window.addEventListener('error', (e) =>
@@ -158,6 +158,7 @@ async function home() {
   // money is dated by when it was paid; owed money by when the work was.
   const nowD = new Date();
   const events = paidEvents(real, stubsByJob);
+  const owedByMonth = owedEvents(real, stubsByJob);
   const last3 = [2, 1, 0].map(k => {
     const d = new Date(nowD.getFullYear(), nowD.getMonth() - k, 1);
     const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -167,11 +168,9 @@ async function home() {
       else if (e.via === 'me') me += e.amt;
       else un += e.amt;
     }
-    for (const j of real.filter(x => x.start_date?.startsWith(m))) {
-      const o = owedFor(j, stubsByJob);
-      due += o.wages + o.gear;
-    }
-    return { label: d.toLocaleString('en-US', { month: 'long' }), m, me, co, un, due };
+    let dueEst = false;
+    for (const e of owedByMonth.filter(x => x.m === m)) { due += e.amt; if (e.kind === 'wages') dueEst = true; }
+    return { label: d.toLocaleString('en-US', { month: 'long' }), m, me, co, un, due, dueEst };
   });
   const unattributed = last3.reduce((s, r) => s + r.un, 0);
 
@@ -199,13 +198,14 @@ async function home() {
     h('div', { class: 'card' },
       h('h2', {}, 'Last 3 months'),
       h('table', { class: 'tot' },
-        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Me'), h('th', {}, 'Company'), h('th', {}, 'Owed')),
+        h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Me'), h('th', {}, 'Company'), h('th', {}, 'Owed (est.)')),
         last3.map(r => h('tr', {},
           h('td', {}, r.label),
           h('td', {}, r.me ? fmt$(r.me) : '—'),
           h('td', {}, r.co ? fmt$(r.co) : '—'),
           h('td', { style: r.due ? 'color:var(--bad);font-weight:600' : '' },
-            r.due ? h('a', { href: '#', class: 'owedlink', onclick: (e) => { e.preventDefault(); showOwed(r.m); } }, fmt$(r.due)) : '—')))),
+            r.due ? h('a', { href: '#', class: 'owedlink', title: 'Estimated from the job\'s day rate for worked days no check has paid yet — tap for details',
+              onclick: (e) => { e.preventDefault(); showOwed(r.m); } }, (r.dueEst ? '~' : '') + fmt$(r.due)) : '—')))),
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     totalsCard(jobs, stubsByJob),
@@ -1059,8 +1059,10 @@ async function showOwed(month) {
   const jobsAll = (await store.allJobs()).filter(j => j.job_status !== 'hold');
   const stubsByJob = {};
   for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
+  // A month's list = the jobs with unpaid work in that month.
+  const inMonth = month ? new Set(owedEvents(jobsAll, stubsByJob).filter(e => e.m === month).map(e => e.job)) : null;
   const owing = jobsAll
-    .filter(j => !month || (j.start_date || '').startsWith(month))
+    .filter(j => !inMonth || inMonth.has(j.id))
     .map(j => ({ j, d: owedDetail(j, stubsByJob) }))
     .filter(x => x.d.lines.length)
     .sort((a, b) => (b.d.late - a.d.late) || (b.d.total - a.d.total));
@@ -2302,7 +2304,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v107';
+const APP_VERSION = 'v108';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
