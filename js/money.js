@@ -140,6 +140,39 @@ export function owedFor(j, stubsByJob) {
   return out;
 }
 
+// What is owed, dated by when the WORK was done (so it sits beside the
+// month's paid money, not under the job's start month): each unpaid worked
+// day in its own month; an untracked job's estimate in its last month;
+// weekly gear invoices in the month their week ended; other gear in the
+// job's last month.
+export function owedEvents(jobs, stubsByJob) {
+  const ev = [];
+  for (const j of jobs) {
+    if (j.deleted || j.job_status === 'hold') continue;
+    const ss = stubsOf(j, stubsByJob);
+    const o = owedFor(j, stubsByJob);
+    const lastM = (j.end_date || j.start_date || '').slice(0, 7);
+    if (o.wages > 0) {
+      const cov = wageCoverage(j, ss);
+      if (cov.tracked) {
+        for (const d of cov.unpaid.filter(d => d <= today())) ev.push({ m: d.slice(0, 7), kind: 'wages', amt: dayPay(j, d), job: j.id });
+      } else ev.push({ m: lastM, kind: 'wages', amt: o.wages, job: j.id });
+    }
+    if (o.gear > 0) {
+      const gi = gearInv(j);
+      if (gi) {
+        let left = o.gear;
+        for (const inv of gi.dueNow.sort((a, b) => (a.end || a.start || '').localeCompare(b.end || b.start || ''))) {
+          const amt = Math.min(left, inv.amount || 0);
+          if (amt > 0) ev.push({ m: (inv.end || inv.start || lastM).slice(0, 7), kind: 'gear', amt, job: j.id });
+          left = round2(left - amt);
+        }
+      } else ev.push({ m: lastM, kind: 'gear', amt: o.gear, job: j.id });
+    }
+  }
+  return ev;
+}
+
 // Every paid dollar, dated when it was PAID: each check's wage and gear parts
 // land in its check-date month, attributed to whoever the check names. Money
 // marked paid with no check behind it (or more than the checks cover) falls

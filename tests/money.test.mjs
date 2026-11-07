@@ -93,3 +93,14 @@ test('paid money lands in the month of the check, attributed to its payee', () =
   assert.deepEqual(paidEvents([{ ...j, job_status: 'hold' }], by(j, stubs)), []);
   assert.equal(gearInv(j), null);
 });
+
+test('owed money sits in the month the work was done, not the job start month', async () => {
+  const { owedEvents } = await import('../js/money.js');
+  const days = []; for (let d = 2; d <= 20; d++) days.push(`2026-10-${String(d).padStart(2, '0')}`);
+  days.push('2026-11-02', '2026-11-03');
+  const j = job({ start_date: '2026-10-02', end_date: '2026-11-03', work_dates: days, days_worked: days.length, wages_status: 'partial', rate_amount: 849.97 });
+  const s1 = { gross: 10000, earnings: st(10000, 100), work_dates: days.slice(0, 19), check_date: '2026-10-25' };
+  const ev = owedEvents([j], by(j, [s1]));
+  assert.deepEqual(ev.map(e => e.m), ['2026-11', '2026-11']);
+  assert.equal(ev.reduce((a, e) => a + e.amt, 0), 1699.94);
+});
