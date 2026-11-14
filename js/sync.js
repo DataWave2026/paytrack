@@ -1,6 +1,6 @@
 // Cloud sync: Google Sheet mirror (backup + multi-device bootstrap),
 // two-way calendar sync, and reminder (alert) events.
-import { settings, saveSettings } from './config.js';
+import { settings, saveSettings, SHARED_PREFS } from './config.js';
 import * as g from './google.js';
 import * as store from './store.js';
 import { parseJobNote, looksLikeJob, jobToNote, gearOnStub } from './parse.js';
@@ -60,7 +60,7 @@ const coerce = (c, raw) => {
     const n = parseFloat(v);
     return v === '' || Number.isNaN(n) ? null : n;
   }
-  if (c === 'deleted' || c === 'no_cal' || c === 'keep_cal') return v === 'true';
+  if (c === 'deleted' || c === 'no_cal' || c === 'keep_cal') return /^true$/i.test(String(v));
   if (c === 'hourly_rates') return v ? v.split('|').map(Number).filter(n => !Number.isNaN(n)) : [];
   if (c === 'work_dates' || c === 'travel_dates') return v ? v.split('|').filter(d => ISO_DAY.test(d)) : [];
   if (c === 'calendar_event_ids') return v ? v.split('|') : [];
@@ -76,16 +76,19 @@ const coerce = (c, raw) => {
 const fromRows = (cols, rows) => {
   const header = (rows[0] || []).map(String);
   const known = header.filter(hc => cols.includes(hc));
-  return rows.slice(1).map(row => {
+  // No sane header (hand-edited sheet): fall back to positional — and if row 0
+  // is itself data (header row deleted), keep it instead of dropping a record.
+  const headerIsData = known.length < 5 && ISO_DAY.test(String((rows[0] || [])[3] || ''));
+  const body = headerIsData ? rows : rows.slice(1);
+  return body.map(row => {
     const rec = {};
     if (known.length >= 5) {
       header.forEach((hc, i) => { if (cols.includes(hc)) rec[hc] = coerce(hc, row[i]); });
     } else {
-      // No sane header (hand-edited sheet): fall back to positional.
       cols.forEach((c, i) => rec[c] = coerce(c, row[i]));
     }
     return rec;
-  });
+  }).filter(rec => !cols.includes(rec.id));   // a shifted header row is not a record
 };
 
 // ---------- Bootstrap (first connect) ----------
@@ -108,20 +111,57 @@ export async function ensureCloudSetup() {
 // used to have NO calendar picked and silently skipped every calendar
 // update. The choice now lives on the sheet file: a device without one
 // adopts it; a device with one publishes it when the sheet has none.
-export async function syncCalendarChoice() {
+export async function syncCalendarChoice() { return syncSharedSettings(); }
+export async function syncSharedSettings() {
   const s = settings();
   if (!s.sheetId) return;
   const props = await g.getFileProps(s.sheetId);
-  const remoteAt = props.calendarChosenAt || '';
-  const localAt = s.calendarChosenAt || '';
+  const patch = {}, publish = {};
+  // Calendar choice: newest calendarChosenAt wins.
+  const remoteAt = props.calendarChosenAt || '', localAt = s.calendarChosenAt || '';
+  let calendarChanged = false;
   if (props.calendarId && props.calendarId !== s.calendarId && (!s.calendarId || remoteAt > localAt)) {
-    // Another device picked (or re-picked) the calendar more recently.
-    saveSettings({ calendarId: props.calendarId, calendarName: props.calendarName || '',
+    Object.assign(patch, { calendarId: props.calendarId, calendarName: props.calendarName || '',
       calendarChosenAt: remoteAt, lastCalPull: '' });
+    calendarChanged = !!s.calendarId;
     log('calendarAdopted', { name: props.calendarName || '' });
   } else if (s.calendarId && (!props.calendarId || (props.calendarId !== s.calendarId && localAt > remoteAt))) {
-    await publishCalendarChoice();
+    const at = localAt || store.now();
+    if (!localAt) patch.calendarChosenAt = at;
+    Object.assign(publish, { calendarId: s.calendarId, calendarName: s.calendarName || '', calendarChosenAt: at });
   }
+  // Shared prefs (alert days, payee names): newest prefsAt wins. A device that
+  // learned the names before sharing existed seeds the sheet once.
+  const remotePrefsAt = props.prefsAt || '', localPrefsAt = s.prefsAt || '';
+  const hasNames = !!(s.companyName || s.personalName);
+  const asPref = (k, v) => /^alertDays/.test(k) ? (parseInt(v, 10) || (k === 'alertDaysWages' ? 14 : 30)) : String(v ?? '');
+  if (!remotePrefsAt && !localPrefsAt && hasNames) {
+    const at = store.now();
+    patch.prefsAt = at;
+    for (const k of SHARED_PREFS) publish[k] = String(s[k] ?? '');
+    publish.prefsAt = at;
+  } else if (remotePrefsAt > localPrefsAt) {
+    for (const k of SHARED_PREFS) if (props[k] !== undefined) patch[k] = asPref(k, props[k]);
+    patch.prefsAt = remotePrefsAt;
+    log('prefsAdopted', { at: remotePrefsAt });
+  } else if (localPrefsAt > remotePrefsAt) {
+    for (const k of SHARED_PREFS) publish[k] = String(s[k] ?? '');
+    publish.prefsAt = localPrefsAt;
+  }
+  // Invoice re-arm day: the latest day ANY device did it, so two devices
+  // never both move the same reminder.
+  if ((props.lastInvoiceNag || '') > (s.lastInvoiceNag || '')) patch.lastInvoiceNag = props.lastInvoiceNag;
+  if (Object.keys(patch).length) saveSettings(patch);
+  if (Object.keys(publish).length) await g.setFileProps(s.sheetId, publish);
+  if (calendarChanged) await resetCalendarLinks();
+}
+export async function publishPrefs() {
+  const s = settings();
+  if (!s.sheetId) return;
+  const publish = {};
+  for (const k of SHARED_PREFS) publish[k] = String(s[k] ?? '');
+  publish.prefsAt = s.prefsAt || store.now();
+  await g.setFileProps(s.sheetId, publish);
 }
 export async function publishCalendarChoice() {
   const s = settings();
@@ -132,52 +172,111 @@ export async function publishCalendarChoice() {
   }
 }
 
+// After the calendar changes (picked here or adopted from another device)
+// every job's event links point at the old calendar. Forget them and queue a
+// push: reconcile-by-tag then adopts events already on the new calendar or
+// creates them.
+export async function resetCalendarLinks() {
+  for (const job of await store.allJobs()) {
+    const blank = { id: job.id };
+    for (const k of store.ID_FIELDS) blank[k] = Array.isArray(job[k]) ? [] : '';
+    await store.saveJobIds(blank);
+    markDirty(job.id);
+  }
+}
+// The user picked a different calendar on THIS device: move the events.
+export async function switchCalendar(id, name) {
+  const s = settings();
+  if (s.calendarId && s.calendarId !== id) {
+    for (const job of await store.allJobs({ includeDeleted: true })) {
+      if (job.deleted && job.keep_cal) continue;
+      try {
+        for (const key of ['paytrackJobId', 'paytrackReminderFor']) {
+          for (const ev of await g.eventsByPrivateProp(s.calendarId, key, job.id)) await g.deleteEvent(s.calendarId, ev.id);
+        }
+      } catch (e) { log('calSwitchSweepErr', { project: job.project, msg: String(e.message).slice(0, 120) }); }
+    }
+  }
+  saveSettings({ calendarId: id, calendarName: name, calendarChosenAt: store.now(), lastCalPull: '' });
+  await resetCalendarLinks();
+  await publishCalendarChoice();
+}
+
 // ---------- Sheet mirror ----------
 let mirrorTimer = null;
+// Something local changed since the last successful mirror. Starts true so a
+// freshly loaded device always writes once; a pull never dirties it.
+let mirrorDirty = true;
+let pullingSheet = false;
+let lastPull = null;
+store.bus.addEventListener('change', () => { if (!pullingSheet) mirrorDirty = true; });
 export function scheduleMirror() {
+  mirrorDirty = true;
   clearTimeout(mirrorTimer);
   mirrorTimer = setTimeout(() => mirrorSheet().catch(e => console.warn('mirror failed', e)), 4000);
 }
 
 let mirrorInFlight = null;
-export function mirrorSheet() {
-  // One mirror at a time — overlapping clear+write pairs interleave.
-  return mirrorInFlight ||= mirrorNow().finally(() => { mirrorInFlight = null; });
+export function mirrorSheet(opts = {}) {
+  // One mirror at a time — overlapping writes interleave.
+  return mirrorInFlight ||= mirrorNow(opts).finally(() => { mirrorInFlight = null; });
 }
-async function mirrorNow() {
+const colLetter = (n) => {
+  let out = '';
+  while (n > 0) { const m = (n - 1) % 26; out = String.fromCharCode(65 + m) + out; n = Math.floor((n - 1) / 26); }
+  return out;
+};
+// Write the table from A1 FIRST, then trim what lies below and to the right.
+// The tab is never empty, not even for a moment — clear-then-write left it
+// blank whenever the write did not land (phone locked, token died).
+async function writeTable(sheetId, tab, cols, recs) {
+  const table = [cols, ...recs.map(r => toRow(cols, r))];
+  await g.writeRange(sheetId, `${tab}!A1`, table);
+  await g.batchClear(sheetId, [`${tab}!A${table.length + 1}:ZZ`, `${tab}!${colLetter(cols.length + 1)}1:ZZ`]);
+}
+async function mirrorNow({ alreadyPulled = false } = {}) {
   const s = settings();
   if (!s.sheetId) return;
   // Merge remote rows first so a full-table write never clobbers a job that
   // another device added since our last pull. If the pull FAILS (expired
   // login, network), abort: writing this device's possibly-stale table over
   // the sheet would erase other devices' records and revert their edits.
-  await pullSheet();
+  const fresh = alreadyPulled && lastPull && Date.now() - lastPull.at < 60000;
+  const pulled = fresh ? lastPull : await pullSheet();
+  if (!mirrorDirty) { saveSettings({ lastSheetSync: store.now() }); return; }
   await store.dropStubHusks().catch(() => {});
-  const jobs = await store.allJobs({ includeDeleted: true });
-  const stubs = await store.allStubs({ includeDeleted: true });
-  // Clear the header row too: a leftover header cell from a device with more
-  // columns would sit over blank data and read back as "empty", wiping values.
-  await g.clearRange(s.sheetId, 'Jobs!A1:ZZ');
-  await g.writeRange(s.sheetId, 'Jobs!A1',
-    [JOB_COLS, ...jobs.map(j => toRow(JOB_COLS, j))]);
-  await g.clearRange(s.sheetId, 'Paystubs!A1:ZZ');
-  await g.writeRange(s.sheetId, 'Paystubs!A1',
-    [STUB_COLS, ...stubs.map(st => toRow(STUB_COLS, st))]);
+  mirrorDirty = false;   // anything that changes from here on re-dirties
+  try {
+    const jobs = await store.allJobs({ includeDeleted: true });
+    const stubs = await store.allStubs({ includeDeleted: true });
+    // Invariant: the table we write must hold at least every row we just read.
+    if (pulled && (jobs.length < pulled.jobs || stubs.length < pulled.stubs)) {
+      log('mirrorRefused', { localJobs: jobs.length, sheetJobs: pulled.jobs, localStubs: stubs.length, sheetStubs: pulled.stubs });
+      throw new Error('Sheet upload refused: this device holds fewer records than the sheet');
+    }
+    if (pulled && pulled.jobs === 0 && jobs.length && s.lastSheetSync) log('sheetWasEmpty', { restoring: jobs.length });
+    await writeTable(s.sheetId, 'Jobs', JOB_COLS, jobs);
+    await writeTable(s.sheetId, 'Paystubs', STUB_COLS, stubs);
+  } catch (e) { mirrorDirty = true; throw e; }
   saveSettings({ lastSheetSync: store.now() });
 }
 
 export async function pullSheet() {
   const s = settings();
-  if (!s.sheetId) return;
+  if (!s.sheetId) return null;
   const jobRows = await g.readRange(s.sheetId, 'Jobs!A1:ZZ');
+  let nj = 0, ns = 0;
   for (const rec of fromRows(JOB_COLS, jobRows)) {
-    if (rec.id) await store.mergeRecord('jobs', rec);
+    if (rec.id) { nj++; await store.mergeRecord('jobs', rec); }
   }
   const stubRows = await g.readRange(s.sheetId, 'Paystubs!A1:ZZ');
   for (const rec of fromRows(STUB_COLS, stubRows)) {
-    if (rec.id) await store.mergeRecord('stubs', rec);
+    if (rec.id) { ns++; await store.mergeRecord('stubs', rec); }
   }
-  store.notifyChanged();
+  pullingSheet = true;
+  try { store.notifyChanged(); } finally { pullingSheet = false; }
+  lastPull = { at: Date.now(), jobs: nj, stubs: ns };
+  return lastPull;
 }
 
 // ---------- Calendar: app -> calendar ----------
@@ -235,8 +334,10 @@ export async function pushJobToCalendar(job) {
     // EVERY event still tagged with this job so a deleted job never leaves
     // events behind.
     try {
-      for (const ev of await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id)) {
-        await g.deleteEvent(s.calendarId, ev.id);
+      for (const key of ['paytrackJobId', 'paytrackReminderFor']) {
+        for (const ev of await g.eventsByPrivateProp(s.calendarId, key, job.id)) {
+          await g.deleteEvent(s.calendarId, ev.id);
+        }
       }
     } catch (e) { log('delSweepErr', String(e.message)); }
   } else if (perDay.length) {
@@ -256,11 +357,12 @@ export async function pushJobToCalendar(job) {
         .filter(e => e.status !== 'cancelled');
       const want = new Set(perDay);
       const byDay = new Map();
+      const extras = [];
       for (const ev of tagged) {
         const d = ev.start?.date;
         const oneDay = d && ev.end?.date === addDays(d, 1);
         if (oneDay && want.has(d) && !byDay.has(d)) byDay.set(d, ev);
-        else await g.deleteEvent(s.calendarId, ev.id);   // extra day, duplicate, or old span
+        else extras.push(ev);   // extra day, duplicate, or old span
       }
       const ids = [];
       for (const d of perDay) {
@@ -277,6 +379,9 @@ export async function pushJobToCalendar(job) {
         }
         job.calendar_event_ids = ids.slice();   // persistable progress if a later call fails
       }
+      // Extras go LAST: another device's calendar pull must never see a
+      // cancelled linked event with no live replacement yet.
+      for (const ev of extras) await g.deleteEvent(s.calendarId, ev.id);
       job.calendar_event_id = '';
       job.calendar_event_ids = ids;
     }
@@ -311,15 +416,50 @@ export function jobDueDates(job) {
   return out;
 }
 
+// One reminder event per (job, kind), reconciled against what is tagged on
+// the calendar — never trusts the remembered id blindly, never inserts beside
+// a stray, and two devices converge on the same event (smallest id wins).
+// If the listing itself fails, fall back to the remembered id.
+const alertKey = (ov) => (ov || []).map(o => `${o.method}${o.minutes}`).sort().join();
+const sameReminder = (ev, event) => ev.summary === event.summary
+  && (ev.description || '') === event.description
+  && (ev.start?.dateTime || '').slice(0, 19) === event.start.dateTime
+  && !ev.recurrence
+  && alertKey(ev.reminders?.overrides) === alertKey(event.reminders.overrides);
+async function taggedReminders(s, job, isMine) {
+  const all = await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id);
+  return all.filter(e => e.status !== 'cancelled' && isMine(e))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+async function reconcileReminder(s, job, idField, isMine, event) {
+  let tagged = null;
+  try { tagged = await taggedReminders(s, job, isMine); } catch (e) { log('remListErr', String(e.message).slice(0, 120)); }
+  const keep = tagged
+    ? (tagged.find(e => e.id === job[idField]) || tagged[0])
+    : (job[idField] ? { id: job[idField] } : null);
+  if (tagged) for (const ev of tagged) if (!keep || ev.id !== keep.id) await g.deleteEvent(s.calendarId, ev.id);
+  if (keep) {
+    try {
+      if (!keep.summary || !sameReminder(keep, event)) await g.patchEvent(s.calendarId, keep.id, event);
+      job[idField] = keep.id;
+      return;
+    } catch (e) { if (!/404|410/.test(e.message)) throw e; }
+  }
+  job[idField] = (await g.insertEvent(s.calendarId, event)).id;
+}
+async function removeReminder(s, job, idField, isMine) {
+  if (!job[idField]) return;
+  let tagged = null;
+  try { tagged = await taggedReminders(s, job, isMine); } catch {}
+  for (const ev of tagged || [{ id: job[idField] }]) await g.deleteEvent(s.calendarId, ev.id);
+  job[idField] = '';
+}
+const ALERTS = { useDefault: false, overrides: [{ method: 'email', minutes: 5 }, { method: 'popup', minutes: 5 }] };
+
 async function upsertPartReminder(job, part, idField, due) {
   const s = settings();
-  if (!due) {
-    if (job[idField]) {
-      await g.deleteEvent(s.calendarId, job[idField]);
-      job[idField] = '';
-    }
-    return;
-  }
+  const isMine = (ev) => (ev.summary || '').endsWith(`${part} unpaid`);
+  if (!due) { await removeReminder(s, job, idField, isMine); return; }
   // A due date whose alert has already passed would never notify — nudge it
   // to the next day that can still alert.
   const earliest = store.earliestNagDay();
@@ -329,42 +469,12 @@ async function upsertPartReminder(job, part, idField, due) {
     description: `PayTrack alert — ${jobToNote(job)}`,
     start: { dateTime: `${due}T09:00:00`, timeZone: TZ },
     end: { dateTime: `${due}T09:30:00`, timeZone: TZ },
-    reminders: {
-      useDefault: false,
-      overrides: [{ method: 'email', minutes: 5 }, { method: 'popup', minutes: 5 }],
-    },
+    reminders: ALERTS,
     extendedProperties: { private: { paytrackReminderFor: job.id } },
   };
-  if (job[idField]) {
-    await g.patchEvent(s.calendarId, job[idField], event)
-      .catch(async e => {
-        if (/404|410/.test(e.message)) {
-          const created = await g.insertEvent(s.calendarId, event);
-          job[idField] = created.id;
-        } else throw e;
-      });
-  } else {
-    // Adopt an existing reminder for this job+part before inserting a new one.
-    let created = null;
-    try {
-      const existing = (await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id))
-        .filter(ev => (ev.summary || '').endsWith(`${part} unpaid`));
-      if (existing.length) {
-        created = existing[0];
-        await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
-        for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
-      }
-    } catch (e) { log('adoptRemErr', String(e.message)); }
-    if (!created) created = await g.insertEvent(s.calendarId, event);
-    job[idField] = created.id;
-  }
+  await reconcileReminder(s, job, idField, isMine, event);
 }
 
-// Unsent invoice: ONE reminder event (email + notification) on the day after
-// wrap. While the invoice stays unsent, rearmInvoiceReminders moves it once
-// a day to the next slot that can still alert, so a fresh email goes out
-// every morning — one calendar line at a time, never a daily series painted
-// across every future day. Gone the moment the invoice is marked sent.
 // Weekly gear invoices nag once their week has ended and they're not sent.
 function unsentGearWeeks(job) {
   const todayIso = store.today();
@@ -378,15 +488,9 @@ function invoiceReminderWanted(job) {
 
 async function upsertInvoiceReminder(job) {
   const s = settings();
-  const todayIso = store.today();
   const gearUnsent = unsentGearWeeks(job);
-  if (!invoiceReminderWanted(job)) {
-    if (job.invoice_reminder_event_id) {
-      await g.deleteEvent(s.calendarId, job.invoice_reminder_event_id);
-      job.invoice_reminder_event_id = '';
-    }
-    return;
-  }
+  const isMine = (ev) => (ev.summary || '').startsWith('Send invoice:');
+  if (!invoiceReminderWanted(job)) { await removeReminder(s, job, 'invoice_reminder_event_id', isMine); return; }
   // The earliest slot that can still alert (see store.earliestNagDay).
   const earliest = store.earliestNagDay();
   const dueDates = [];
@@ -405,34 +509,10 @@ async function upsertInvoiceReminder(job) {
     start: { dateTime: `${due}T09:00:00`, timeZone: TZ },
     end: { dateTime: `${due}T09:15:00`, timeZone: TZ },
     recurrence: [],   // explicit: a patch of an older daily-repeating reminder clears its series
-    reminders: {
-      useDefault: false,
-      overrides: [{ method: 'email', minutes: 5 }, { method: 'popup', minutes: 5 }],
-    },
+    reminders: ALERTS,
     extendedProperties: { private: { paytrackReminderFor: job.id } },
   };
-  if (job.invoice_reminder_event_id) {
-    await g.patchEvent(s.calendarId, job.invoice_reminder_event_id, event)
-      .catch(async e => {
-        if (/404|410/.test(e.message)) {
-          const created = await g.insertEvent(s.calendarId, event);
-          job.invoice_reminder_event_id = created.id;
-        } else throw e;
-      });
-  } else {
-    let created = null;
-    try {
-      const existing = (await g.eventsByPrivateProp(s.calendarId, 'paytrackReminderFor', job.id))
-        .filter(ev => (ev.summary || '').startsWith('Send invoice:'));
-      if (existing.length) {
-        created = existing[0];
-        await g.patchEvent(s.calendarId, created.id, event).catch(() => {});
-        for (const stray of existing.slice(1)) await g.deleteEvent(s.calendarId, stray.id);
-      }
-    } catch (e) { log('adoptInvErr', String(e.message)); }
-    if (!created) created = await g.insertEvent(s.calendarId, event);
-    job.invoice_reminder_event_id = created.id;
-  }
+  await reconcileReminder(s, job, 'invoice_reminder_event_id', isMine, event);
 }
 
 // Wages and gear run on separate timers, so each unpaid part gets its own
@@ -471,40 +551,48 @@ export function pushJob(job) {
 // Once a day, move every unsent invoice's single reminder forward to the
 // next slot that can still alert (see upsertInvoiceReminder), so a fresh
 // email + notification goes out each morning the invoice stays unsent. The
-// reminder used to be a daily series — one line on every future day — and
-// was only ever re-dated when the job itself was edited.
+// day marker is shared through the sheet file so two devices never both do
+// it; a job whose patch failed is retried on later syncs without blocking
+// the others.
+const nagFailed = new Set();
 export async function rearmInvoiceReminders() {
   const s = settings();
   if (!s.calendarId) return;
   const todayIso = store.today();
-  if (s.lastInvoiceNag === todayIso) return;
-  let ok = true;
+  const dueToday = s.lastInvoiceNag !== todayIso;
+  if (!dueToday && !nagFailed.size) return;
   for (const job of await store.allJobs()) {
-    if (!invoiceReminderWanted(job)) continue;
+    if (!invoiceReminderWanted(job)) { nagFailed.delete(job.id); continue; }
+    if (!dueToday && !nagFailed.has(job.id)) continue;
     await queued(job.id, async () => {
       const j = (await store.getJob(job.id)) || job;
-      const before = j.invoice_reminder_event_id;
-      try { await upsertInvoiceReminder(j); } finally { await store.saveJobIds(j); }
-      if (j.invoice_reminder_event_id !== before) scheduleMirror();   // other devices must learn the new id
-    }).catch(e => { ok = false; log('invNagErr', { project: job.project, msg: String(e.message).slice(0, 120) }); });
+      const before = store.pickIds(j);
+      try { await upsertInvoiceReminder(j); } finally { await store.saveJobIds(j, before); }
+      if (j.invoice_reminder_event_id !== before.invoice_reminder_event_id) scheduleMirror();   // other devices must learn the new id
+      nagFailed.delete(job.id);
+    }).catch(e => { nagFailed.add(job.id); log('invNagErr', { project: job.project, msg: String(e.message).slice(0, 120) }); });
   }
-  if (ok) saveSettings({ lastInvoiceNag: todayIso });
+  if (dueToday) {
+    saveSettings({ lastInvoiceNag: todayIso });
+    if (s.sheetId) g.setFileProps(s.sheetId, { lastInvoiceNag: todayIso }).catch(() => {});
+  }
 }
 
 async function pushJobNow(id, fallback) {
   const job = (await store.getJob(id)) || fallback;
-  // Only the calendar ids are written back (onto the freshest stored copy,
-  // stamp untouched): a save or merge that lands while the network calls
-  // run must not be overwritten by this push's starting snapshot.
+  // Only the calendar ids THIS push changed are written back (onto the
+  // freshest stored copy, stamp untouched): a save or merge that lands while
+  // the network calls run must not be overwritten by the starting snapshot.
+  const before = store.pickIds(job);
   try {
     await pushJobToCalendar(job);
   } finally {
-    await store.saveJobIds(job);
+    await store.saveJobIds(job, before);
   }
   try {
     await syncReminder(job);
   } finally {
-    await store.saveJobIds(job);
+    await store.saveJobIds(job, before);
   }
   scheduleMirror();
   return job;
@@ -517,6 +605,7 @@ async function pushJobNow(id, fallback) {
 const DIRTY_KEY = 'paytrack.dirtyPush';
 const dirtyIds = () => { try { return JSON.parse(localStorage.getItem(DIRTY_KEY) || '[]'); } catch { return []; } };
 const setDirty = (ids) => { try { localStorage.setItem(DIRTY_KEY, JSON.stringify([...new Set(ids)].slice(-200))); } catch {} };
+export function markDirty(id) { setDirty([...dirtyIds(), id]); }
 export function pushSoon(job) {
   setDirty([...dirtyIds(), job.id]);
   return pushJob(job).then((r) => { setDirty(dirtyIds().filter(x => x !== job.id)); return r; });
@@ -626,6 +715,7 @@ export async function pullCalendar() {
   const params = (since) => ({
     updatedMin: since, showDeleted: 'true', singleEvents: 'true',
     timeMin: new Date(Date.now() - 400 * 86400000).toISOString(),
+    timeMax: new Date(Date.now() + 180 * 86400000).toISOString(),
   });
   let items, skipped = false;
   const pullStarted = new Date(Date.now() - 120000).toISOString();
@@ -654,6 +744,9 @@ export async function pullCalendar() {
         const known = ev.id === job.calendar_event_id
           || (job.calendar_event_ids || []).includes(ev.id);
         if (!known) continue;
+        // The other device may be mid-rebuild (old events cancelled, new ones
+        // not inserted yet): a cancellation this fresh is re-examined next pull.
+        if (Date.now() - Date.parse(ev.updated || 0) < 120000) { skipped = true; continue; }
         // Delete the job only when NONE of its events survive. If live tagged
         // events remain, relink to those instead of discarding the job.
         let live = [];

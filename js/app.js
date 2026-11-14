@@ -1,4 +1,4 @@
-import { settings, saveSettings } from './config.js';
+import { settings, saveSettings, savePrefs } from './config.js';
 import * as store from './store.js';
 import * as auth from './auth.js';
 import * as g from './google.js';
@@ -249,8 +249,22 @@ async function home() {
       recent.length ? [
         ...recent.slice(0, 8).map(j => jobRow(j, stubsByJob)),
         listTotalsLine(recent.slice(0, 8), stubsByJob, 'Total (listed)'),
-      ] : h('p', { class: 'muted' }, 'No completed jobs yet. Add one in the Jobs tab, or import your calendar history from the Import tab.')),
+      ] : emptyHint()),
   );
+}
+
+// An empty device is usually a device whose storage was cleared (or a new
+// one), not a new user: point at the cloud copy before inviting re-entry.
+function emptyHint() {
+  if (!auth.isConnected()) {
+    return h('div', {},
+      h('p', { class: 'muted' }, 'Nothing here yet. If you have used PayTrack before, connect Google and your jobs come back from the PayTrack DB sheet in your Drive.'),
+      h('button', { class: 'primary', onclick: async () => {
+        try { await auth.connect(); toast('Connected — syncing…'); await backgroundSync(); render('home'); }
+        catch (e) { toast(e.message, 6000); }
+      } }, 'Connect Google'));
+  }
+  return h('p', { class: 'muted' }, 'No completed jobs yet. Add one in the Jobs tab, or import your calendar history from the Import tab.');
 }
 
 function statusBadge(kind, status) {
@@ -1394,6 +1408,28 @@ async function runStubPipeline(file) {
   }
 }
 
+// After a check record leaves a job (moved to another one), that job's
+// statuses follow what remains: no wage check left means wages are not paid,
+// gear received is re-counted, and the check's note line goes. Without this
+// the old job stayed "paid" with no check behind it and its estimate was
+// counted as paid money a second time.
+async function afterStubRemoved(jobId, checkNo) {
+  const job = await store.getJob(jobId);
+  if (!job || job.deleted) return;
+  const rest = (await store.allStubs()).filter(st => st.matched_job_id === jobId);
+  const wageLeft = rest.some(st => (st.gross || 0) - gearOnStub(st.earnings) > 0);
+  if (!wageLeft) { if (job.wages_status === 'paid' || job.wages_status === 'partial') job.wages_status = 'unpaid'; }
+  else { const cov = wageCoverage(job, rest); if (cov.tracked) job.wages_status = cov.unpaid.length ? 'partial' : 'paid'; }
+  if ((job.gear_status === 'paid' || job.gear_status === 'partial') && !(job.gear_invoices || []).length && job.gear_total) {
+    const got = gearReceived(rest);
+    if (got < job.gear_total - 1) job.gear_status = got > 0 ? 'partial' : 'unpaid';
+  }
+  if (checkNo) job.notes = (job.notes || '').split('\n').filter(l => !l.includes(`check #${checkNo}`)).join('\n');
+  await store.putJob(job, { silent: true });
+  sync.pushSoon(job).catch(() => {});
+  log('stubRemovedRederived', { project: job.project, wages: job.wages_status, gear: job.gear_status });
+}
+
 function confirmStubForm(parsed, uploaded, ocrText) {
   overlayOpen = true;
   const p = { ...parsed };
@@ -1790,8 +1826,8 @@ async function pickMatch(p, uploaded, ocrText) {
           if (!(amt1 > 0) || !(amt2 > 0)) return toast('Enter the amount for each job.');
           // Payee attribution — same rules as a single-job save.
           const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
-          if (p.paid_to === 'company' && p.payee && !settings().companyName) saveSettings({ companyName: p.payee });
-          if (p.paid_to === 'me' && p.payee && !settings().personalName) saveSettings({ personalName: p.payee });
+          if (p.paid_to === 'company' && p.payee && !settings().companyName) { savePrefs({ companyName: p.payee }); sync.publishPrefs().catch(() => {}); }
+          if (p.paid_to === 'me' && p.payee && !settings().personalName) { savePrefs({ personalName: p.payee }); sync.publishPrefs().catch(() => {}); }
           let via = '';
           if (p.paid_to) via = p.paid_to;
           else if (/loan\s*-?\s*out/i.test(p.classification || '')) via = 'company';
@@ -1926,8 +1962,8 @@ async function pickMatch(p, uploaded, ocrText) {
         // decided from the Name on the stub; fall back to classification.
         const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
         // Auto-learn the two payee names from real stubs.
-        if (p.paid_to === 'company' && p.payee && !settings().companyName) saveSettings({ companyName: p.payee });
-        if (p.paid_to === 'me' && p.payee && !settings().personalName) saveSettings({ personalName: p.payee });
+        if (p.paid_to === 'company' && p.payee && !settings().companyName) { savePrefs({ companyName: p.payee }); sync.publishPrefs().catch(() => {}); }
+        if (p.paid_to === 'me' && p.payee && !settings().personalName) { savePrefs({ personalName: p.payee }); sync.publishPrefs().catch(() => {}); }
         let via = '';
         if (p.paid_to) via = p.paid_to;
         else if (/loan\s*-?\s*out/i.test(p.classification || '')) via = 'company';
@@ -1966,6 +2002,7 @@ async function pickMatch(p, uploaded, ocrText) {
           const names = [...new Set(elsewhere.map(s => (jobsList.find(j => j.id === s.matched_job_id) || {}).project || 'another job'))].join(' and ');
           if (confirm(`Check #${p.check_no} is already filed on ${names}.\n\nOK = move it to "${job.project}" (the other record is removed).\nCancel = keep both records (use this only if the check really paid both jobs).`)) {
             for (const m of elsewhere) await store.deleteStub(m.id);
+            for (const jid of new Set(elsewhere.map(m => m.matched_job_id))) await afterStubRemoved(jid, p.check_no);
             log('stubMoved', { check: p.check_no, to: job.project });
           }
         }
@@ -2117,11 +2154,11 @@ async function settingsView() {
   });
   const wagesAlertInput = h('input', {
     type: 'number', value: s.alertDaysWages, inputmode: 'numeric',
-    onchange: (e) => saveSettings({ alertDaysWages: parseInt(e.target.value, 10) || 14 }),
+    onchange: (e) => { savePrefs({ alertDaysWages: parseInt(e.target.value, 10) || 14 }); sync.publishPrefs().catch(() => {}); },
   });
   const gearAlertInput = h('input', {
     type: 'number', value: s.alertDaysGear, inputmode: 'numeric',
-    onchange: (e) => saveSettings({ alertDaysGear: parseInt(e.target.value, 10) || 30 }),
+    onchange: (e) => { savePrefs({ alertDaysGear: parseInt(e.target.value, 10) || 30 }); sync.publishPrefs().catch(() => {}); },
   });
 
   const calCard = h('div', { class: 'card' },
@@ -2136,10 +2173,11 @@ async function settingsView() {
           const picker = h('div', {},
             cals.map(c => h('div', {
               class: 'candidate' + (c.id === s.calendarId ? ' best' : ''),
-              onclick: () => {
-                saveSettings({ calendarId: c.id, calendarName: c.summary, calendarChosenAt: store.now(), lastCalPull: '' });
-                sync.publishCalendarChoice().catch(() => {});
-                toast(`Syncing with "${c.summary}".`);
+              onclick: async () => {
+                if (c.id === s.calendarId) { toast(`Already syncing with "${c.summary}".`); return; }
+                toast(`Switching to "${c.summary}" — moving events…`, 5000);
+                try { await sync.switchCalendar(c.id, c.summary); } catch (e) { toast(`Switch failed: ${e.message}`, 8000); }
+                backgroundSync();
                 render('settings');
               },
             }, c.summary)));
@@ -2208,7 +2246,7 @@ async function settingsView() {
           } catch (e) { toast(e.message, 8000); }
         },
       }, auth.isConnected() ? 'Reconnect Google' : 'Connect Google'),
-      auth.isConnected() ? h('button', { class: 'secondary', onclick: () => { auth.disconnect(); render('settings'); } }, 'Disconnect') : null),
+      auth.isConnected() ? h('button', { class: 'secondary', onclick: () => { auth.disconnect(); saveSettings({ everConnected: false }); render('settings'); } }, 'Disconnect') : null),
     calCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Profile'),
@@ -2219,12 +2257,12 @@ async function settingsView() {
       h('label', {}, 'My loan-out company name (as it appears on stubs)'),
       h('input', {
         value: s.companyName, placeholder: 'auto-learned from company stubs',
-        onchange: (e) => saveSettings({ companyName: e.target.value.trim() }),
+        onchange: (e) => { savePrefs({ companyName: e.target.value.trim() }); sync.publishPrefs().catch(() => {}); },
       }),
       h('label', {}, 'My name (as it appears on stubs)'),
       h('input', {
         value: s.personalName, placeholder: 'auto-learned from personal stubs',
-        onchange: (e) => saveSettings({ personalName: e.target.value.trim() }),
+        onchange: (e) => { savePrefs({ personalName: e.target.value.trim() }); sync.publishPrefs().catch(() => {}); },
       }),
       h('label', {}, 'Keep scan photos for troubleshooting'),
       segmented('keepscans', s.keepScans === false ? 'off' : 'on',
@@ -2240,26 +2278,21 @@ async function settingsView() {
     h('div', { class: 'card' },
       h('h2', {}, 'Data'),
       h('p', { class: 'muted small' },
-        s.sheetId ? h('span', {}, 'Database: ', h('a', { href: `https://docs.google.com/spreadsheets/d/${s.sheetId}`, target: '_blank' }, 'PayTrack DB sheet'), ' in your Drive. Stub photos are never stored — only extracted details.')
+        s.sheetId ? h('span', {}, 'Database: ', h('a', { href: `https://docs.google.com/spreadsheets/d/${s.sheetId}`, target: '_blank' }, 'PayTrack DB sheet'), ' in your Drive. ', s.keepScans === false
+            ? 'Scan photos are not stored — only the extracted details.'
+            : 'Scan photos and their text are archived in your Drive while "Keep scan photos" is on.')
           : 'Connect Google to create the PayTrack DB sheet.'),
+      h('p', { class: 'muted small' }, syncHealth()),
       h('button', {
-        class: 'secondary', onclick: async () => {
-          // Every stage runs even if one fails — the sheet upload (this
-          // device's data reaching the cloud) must never be blocked by a
-          // calendar error.
-          const errs = [];
-          for (const [name, fn] of [
-            ['sheet pull', () => sync.pullSheet()],
-            ['calendar', () => sync.pullCalendar()],
-            ['calendar updates', () => sync.pushDirty()],
-            ['sheet upload', () => sync.mirrorSheet()],
-          ]) {
-            try { await fn(); } catch (e) {
-              errs.push(`${name}: ${e.message}`);
-              log('syncNow:' + name, { msg: String(e.message).slice(0, 200) });
-            }
-          }
-          toast(errs.length ? `Synced with errors — ${errs.join(' · ')}` : 'Synced ✓', errs.length ? 9000 : 3000);
+        class: 'secondary', onclick: async (e) => {
+          // The same engine as the background sync (single-flight, every
+          // stage, repairs only after a fresh pull) — never a side path.
+          const btn = e.currentTarget; btn.disabled = true;
+          try {
+            const errs = await backgroundSync();
+            if (!errs) toast('Not connected — tap the dot in the top bar to reconnect.', 6000);
+            else toast(errs.length ? `Synced with errors — ${errs.join(' · ')}` : 'Synced ✓', errs.length ? 9000 : 3000);
+          } finally { btn.disabled = false; if (currentView === 'settings') render('settings'); }
         },
       }, 'Sync now'),
       h('p', { class: 'muted small mt' },
@@ -2342,17 +2375,23 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v112';
+const APP_VERSION = 'v113';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
   const dot = document.getElementById('conn-status');
-  dot.className = state === 'connected' ? 'on' : (auth.hasCredentials() ? 'warn' : '');
-  dot.title = state === 'connected' ? 'Google connected' : 'Google not connected — tap to reconnect';
+  const bad = state === 'connected' && lastSync && lastSync.errs.length;
+  dot.className = state === 'connected' ? (bad ? 'on err' : 'on') : (auth.hasCredentials() ? 'warn' : '');
+  dot.title = state === 'connected'
+    ? (bad ? `Google connected — last sync had an error: ${lastSync.errs[0]}` : 'Google connected')
+    : 'Google not connected — tap to reconnect';
 }
 auth.authBus.addEventListener('state', (e) => {
   setConnDot(e.detail);
   log('auth', e.detail);
+  // Ask the browser to keep our data (IndexedDB, settings, token) out of
+  // best-effort eviction once the user has signed in.
+  if (e.detail === 'connected') navigator.storage?.persist?.().then(ok => log('persist', { ok })).catch(() => {});
 });
 setConnDot(auth.isConnected() ? 'connected' : 'disconnected');
 // One-tap reconnect: a real click is a user gesture, so the Google popup
@@ -2546,8 +2585,20 @@ async function healStatuses() {
 // One sync at a time: the 5-minute timer, tab refocus and reconnect can all
 // fire together.
 let syncInFlight = null;
+let syncStartedAt = 0;
 function backgroundSync() {
-  return syncInFlight ||= runSync().finally(() => { syncInFlight = null; maybeReloadForUpdate(); });
+  // Watchdog: a sync that has hung for 6 minutes (a request that never
+  // settled) must not block every later sync until the page reloads.
+  if (syncInFlight && Date.now() - syncStartedAt > 6 * 60000) {
+    log('syncWatchdog', { stuckMs: Date.now() - syncStartedAt });
+    syncInFlight = null;
+  }
+  if (!syncInFlight) {
+    syncStartedAt = Date.now();
+    const mine = runSync().finally(() => { if (syncInFlight === mine) syncInFlight = null; maybeReloadForUpdate(); });
+    syncInFlight = mine;
+  }
+  return syncInFlight;
 }
 async function runSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
@@ -2558,7 +2609,8 @@ async function runSync() {
     await auth.token();               // silent refresh if possible
   } catch (e) {
     log('sync', { ok: false, code: e.code || '', msg: String(e.message).slice(0, 160) });
-    return;
+    lastSync = { at: Date.now(), errs: [String(e.message)] };
+    return lastSync.errs;
   }
   // Each stage runs even when an earlier one fails — a calendar hiccup must
   // never strand this device's data outside the sheet.
@@ -2566,7 +2618,7 @@ async function runSync() {
   // holding an older copy of a job used to see another device's calendar
   // push as "the user edited the event", stamp its stale copy as newest and
   // overwrite the real edit everywhere.
-  const errs = [];
+  const errs = [], errMsgs = [];
   for (const [name, fn] of [
     ['pullSheet', () => sync.pullSheet()],
     ['healStatuses', () => healStatuses()],
@@ -2577,7 +2629,7 @@ async function runSync() {
     ['invoiceNag', () => sync.rearmInvoiceReminders()],
     // Upload as well as download: a job created while this device was
     // offline/disconnected must still reach the sheet eventually.
-    ['mirrorSheet', () => sync.mirrorSheet()],
+    ['mirrorSheet', () => sync.mirrorSheet({ alreadyPulled: true })],
   ]) {
     // Without a fresh sheet merge this device may hold stale jobs — don't let
     // it interpret calendar changes against them.
@@ -2586,13 +2638,26 @@ async function runSync() {
     if (name === 'healStatuses' && errs.includes('pullSheet')) continue;
     try { await fn(); } catch (e) {
       errs.push(name);
+      errMsgs.push(`${name}: ${String(e.message).slice(0, 160)}`);
       log('sync:' + name, { ok: false, code: e.code || '', msg: String(e.message).slice(0, 200) });
-      if (e.code === 'NEEDS_CONNECT') return;
+      if (e.code === 'NEEDS_CONNECT') break;
       console.warn('sync', name, e);
     }
   }
   log('sync', { ok: !errs.length, failed: errs });
+  lastSync = { at: Date.now(), errs: errMsgs };
+  setConnDot(auth.isConnected() ? 'connected' : 'disconnected');
   pushDiagnostics().catch(() => {});
+  return errMsgs;
+}
+// Sync health for the Setup screen and the connection dot: a failing stage
+// used to be invisible for weeks (the dot only ever reflected the login).
+let lastSync = null;
+function syncHealth() {
+  if (!lastSync) return 'No sync yet in this session.';
+  const mins = Math.round((Date.now() - lastSync.at) / 60000);
+  const when = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
+  return `Last sync ${when} · ${lastSync.errs.length ? 'last error — ' + lastSync.errs[0] : 'no errors'}`;
 }
 
 if ('serviceWorker' in navigator) {
@@ -2616,11 +2681,18 @@ render('home');
 setTimeout(backfillPaidVia, 800);
 setTimeout(dedupeChecks, 1200);
 window.addEventListener('load', () => setTimeout(backgroundSync, 1500));
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    backgroundSync();
-    navigator.serviceWorker?.getRegistration?.().then(r => r?.update()).catch(() => {});
-  }
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  // Pick up a new version BEFORE syncing with the old logic (2 s cap so an
+  // offline device still syncs); a waiting worker reloads once idle.
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration?.();
+    if (reg) {
+      await Promise.race([reg.update().catch(() => {}), new Promise(r => setTimeout(r, 2000))]);
+      if (reg.installing || reg.waiting) { reloadPending = true; maybeReloadForUpdate(); return; }
+    }
+  } catch {}
+  backgroundSync();
 });
 // Devices left open still pick up each other's changes.
 setInterval(backgroundSync, 5 * 60 * 1000);

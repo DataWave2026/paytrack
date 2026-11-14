@@ -21,7 +21,15 @@ const DEFAULTS = {
   googleEmail: '',           // login_hint so silent renewal skips the account chooser
   calSyncToken: '',
   lastSheetSync: '',
+  calendarChosenAt: '',
+  prefsAt: '',               // when the shared prefs below were last edited (newest wins across devices)
+  lastInvoiceNag: '',        // local day the unsent-invoice reminders were last re-armed
 };
+
+// Settings that change what the app DOES with shared data (reminder dates,
+// payee attribution) are shared between devices through the sheet file's
+// properties — a per-device copy made two devices fight over one reminder.
+export const SHARED_PREFS = ['alertDaysWages', 'alertDaysGear', 'companyName', 'personalName'];
 
 let cache = null;
 
@@ -34,9 +42,20 @@ export function settings() {
 }
 
 export function saveSettings(patch) {
-  cache = { ...settings(), ...patch };
-  localStorage.setItem(KEY, JSON.stringify(cache));
+  // Re-read before merging: another tab may have written since this tab
+  // cached its copy (a stale cache used to revert the other tab's values).
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch {}
+  cache = { ...DEFAULTS, ...stored, ...patch };
+  try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch (e) { console.warn('settings not saved', e); }
   return cache;
+}
+// A user edit to a shared pref: stamp it so the newest edit wins everywhere.
+export function savePrefs(patch) {
+  return saveSettings({ ...patch, prefsAt: new Date().toISOString() });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => { if (e.key === KEY) cache = null; });
 }
 
 export const SCOPES = [

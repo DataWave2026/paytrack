@@ -2,6 +2,10 @@
 // model APIs — plain fetch with the user's own OAuth token.
 import { token, trySilentRefresh, invalidate } from './auth.js';
 
+// Every request has a deadline: a fetch that never settles (a phone suspended
+// mid-request, a stalled connection on one bar of LTE) used to leave the whole
+// sync hanging forever with the connection dot still green.
+const TIMEOUT_MS = 45000, UPLOAD_TIMEOUT_MS = 120000;
 async function call(url, { method = 'GET', json, body, headers = {}, raw = false } = {}, _retried = false) {
   const t = await token();
   const opts = { method, headers: { Authorization: `Bearer ${t}`, ...headers } };
@@ -11,7 +15,20 @@ async function call(url, { method = 'GET', json, body, headers = {}, raw = false
   } else if (body !== undefined) {
     opts.body = body;
   }
-  const resp = await fetch(url, opts);
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ac && setTimeout(() => ac.abort(), body !== undefined ? UPLOAD_TIMEOUT_MS : TIMEOUT_MS);
+  if (ac) opts.signal = ac.signal;
+  let resp;
+  try {
+    resp = await fetch(url, opts);
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      const err = new Error(`Google API timed out (${url.split('?')[0]})`);
+      err.code = 'TIMEOUT';
+      throw err;
+    }
+    throw e;
+  } finally { if (timer) clearTimeout(timer); }
   // Token died mid-session: refresh silently and retry once instead of
   // surfacing "disconnected".
   if (resp.status === 401 && !_retried) {
@@ -19,6 +36,9 @@ async function call(url, { method = 'GET', json, body, headers = {}, raw = false
     if (await trySilentRefresh()) {
       return call(url, { method, json, body, headers, raw }, true);
     }
+    const e = new Error('Google connection expired — tap the dot in the top bar to reconnect.');
+    e.code = 'NEEDS_CONNECT';
+    throw e;
   }
   if (!resp.ok) {
     let detail = '';
@@ -149,6 +169,11 @@ export async function writeRange(sheetId, range, values) {
   return call(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`,
     { method: 'PUT', json: { values } });
+}
+
+export async function batchClear(sheetId, ranges) {
+  return call(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchClear`,
+    { method: 'POST', json: { ranges } });
 }
 
 export async function clearRange(sheetId, range) {

@@ -253,3 +253,6 @@ table.tot tr.sum td { font-weight: 700; border-bottom: none; }
 .stat.clicky { cursor: pointer; border-radius: 10px; transition: background .15s; }
 .stat.clicky:hover { background: var(--panel2); }
 a.owedlink { color: inherit; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+
+/* Connected, but the last sync had an error (see Setup > Data). */
+#conn-status.err { color: #e6a700; }
