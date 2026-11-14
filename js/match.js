@@ -14,7 +14,10 @@ function overlapScore(stub, job) {
     if (!stub.check_date) return 0;
     const gap = daysBetween(job.end_date || job.start_date, stub.check_date);
     if (gap >= -1 && gap <= 45) return 25;
-    if (gap > 45 && gap <= 70) return 10;
+    // Late payments (46-90 days) are routine for gear invoices, so the gap
+    // alone must not pick a recent job over an older unpaid one from the
+    // same client — it stays a plausible, slightly weaker signal.
+    if (gap > 45 && gap <= 90) return 20;
     return 0;
   }
   const s1 = stub.period_start, e1 = stub.period_end || stub.period_start;
@@ -71,6 +74,16 @@ function norm(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Entity suffixes carry no identity: "BRIGHT FUTURE, LLC", "Bright Future
+// LLC" and "BRIGHT FUTURE" (the check parser trims after the comma) are one
+// company. Applied to name COMPARISONS only — acronym() keeps the raw words
+// so a show logged by its initials still resolves the same way.
+const SUFFIX_RE = /(?:\s+(?:llc|l l c|inc|corp|ltd|co|company))+$/;
+function nameKey(s) {
+  const n = norm(s);
+  return n.replace(SUFFIX_RE, '').trim() || n;
+}
+
 // A gear payment matching the job's stated gear total is a strong signal.
 function gearScore(stub, job) {
   if (!stub.gear_amount || !job.gear_total) return 0;
@@ -94,8 +107,13 @@ export function acronym(s) {
 
 function nameScore(stub, job) {
   // job_title carries a check's memo line — memos often name the show.
-  const stubNames = [norm(stub.project_name), norm(stub.employer), norm(stub.job_title), norm(stub.memo)].filter(Boolean);
-  const jobNames = [norm(job.project), norm(job.company)].filter(Boolean);
+  const stubNames = [nameKey(stub.project_name), nameKey(stub.employer), nameKey(stub.job_title), nameKey(stub.memo)].filter(Boolean);
+  const jobNames = [nameKey(job.project), nameKey(job.company)].filter(Boolean);
+  // A bare check (no project, no work period) can only match on the PAYER's
+  // name — and a repeat client's name fits every job they ever booked, so
+  // it is capped below the exact-title score; dates and the gear amount
+  // must carry the rest.
+  const bare = !stub.project_name && !stub.period_start;
   let best = 0;
   // Acronym of the stub's show title vs the job name as typed ("AoA2",
   // "AOA2 - prep"): exact = strong, prefix = solid.
@@ -125,7 +143,27 @@ function nameScore(stub, job) {
       }
     }
   }
-  return best;
+  return bare ? Math.min(best, 25) : best;
+}
+
+// Two candidates the matcher cannot tell apart: same company, and BOTH jobs'
+// stated gear total equals the check's gear amount (within 2%). A late gear
+// check from a repeat client fits either job, so the app must not preselect
+// one — the user breaks the tie. Works on matchStub()'s output (uses the
+// gear component already scored); pass the stub to compare amounts directly.
+export function isTie(candidates, stub) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return false;
+  const [a, b] = candidates;
+  const ca = nameKey(a.job?.company), cb = nameKey(b.job?.company);
+  if (!ca || ca !== cb) return false;
+  const gearMatches = (c) => {
+    if (stub && stub.gear_amount) {
+      const total = c.job?.gear_total;
+      return !!total && Math.abs(stub.gear_amount - total) / total <= 0.02;
+    }
+    return (c.parts?.ga ?? 0) >= 25;
+  };
+  return gearMatches(a) && gearMatches(b);
 }
 
 function scoreParts(stub, job) {

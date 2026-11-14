@@ -523,7 +523,7 @@ ISSUED 09/04/2026
 PAY TO THE ORDER OF Example Media Co $1,900.00
 One thousand nine hundred dollars and 00/100
 VOID AFTER 90 DAYS
-Memo: 20261022 Digitech EQ Inv#2627
+Memo: 20220202 Digitech EQ Inv#2627
 AUTHORIZED SIGNATURE`;
   const p = parseStub(txt);
   assert.equal(p.vendor, 'check');
@@ -607,7 +607,7 @@ MEMO
 *********2,000.00
 DOLLARS
 TWO SIGNATURES REQUIRED IF $10,000 OR MORE
-084556 12 2016066
+084556 00 0000000
 111111111''
 BRIGHT FUTURE, LLC
 20000000
@@ -921,4 +921,261 @@ Union:
   assert.equal(p.net, 1750.04);
   assert.equal(p.gross, 1750.04);
   assert.deepEqual(p.earnings.map(e => [e.type, e.amount]), [['Straight time', 1309.12], ['Overtime', 490.92], ['Adjustment', -50]]);
+});
+
+// ---- second audit: parser regressions (all text fictional) ----
+test('C5: every way of saying unpaid, and "paid?" is a question, not paid', () => {
+  const n = parseJobNote('$955/10 not paid, $1200/gear not paid');
+  assert.equal(n.rate_amount, 955);
+  assert.equal(n.wages_status, 'unpaid');
+  assert.equal(n.gear_total, 1200);
+  assert.equal(n.gear_status, 'unpaid');
+  assert.equal(parseJobNote('$955/10 NOT PAID').wages_status, 'unpaid');
+  assert.equal(parseJobNote('$955/10 un-paid').wages_status, 'unpaid');
+  assert.equal(parseJobNote('$955/10 owed').wages_status, 'unpaid');
+  assert.equal(parseJobNote('$955/10 outstanding').wages_status, 'unpaid');
+  assert.equal(parseJobNote('$1200/gear due').gear_status, 'unpaid');
+  assert.equal(parseJobNote('gear owed').gear_status, 'unpaid');
+  assert.equal(parseJobNote('$1000/day paid?').wages_status, null);
+  assert.notEqual(parseJobNote('$955/10 paid?').wages_status, 'paid');
+  assert.equal(parseJobNote('gear paid?').gear_status, null);
+  assert.equal(parseJobNote('wages paid?').wages_status, null);
+  // ...and plain "paid" still means paid.
+  assert.equal(parseJobNote('$955/10 paid').wages_status, 'paid');
+  assert.equal(parseJobNote('Sept 12 gear paid').gear_status, 'paid');
+});
+
+test('C6: joint check — the asterisk-protected total beats the per-invoice AMOUNT column', () => {
+  const p = parseStub(`BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+***2,000.00
+84556
+09/23/2026
+INVOICE#
+2629 2630
+AMOUNT
+1,000.00
+1,000.00
+DIT EQUIPMENT
+VOID AFTER 90 DAYS`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.gross, 2000);
+  assert.equal(p.net, 2000);
+  assert.equal(p.check_no, '84556');
+  assert.equal(p.memo, 'Inv #2629, #2630');
+  // A labelled amount at least as large as the marked figure still wins.
+  const q = parseStub(`PAY TO THE ORDER OF Jane Doe
+Amount $955.00
+$5.00 fee
+Check No. 8841
+Date 09/12/2026`);
+  assert.equal(q.gross, 955);
+  assert.equal(q.check_no, '8841');
+});
+
+test('C7: the corner number beside the amount beats an earlier standalone invoice number', () => {
+  const p = parseStub(`BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+INVOICE#
+2629
+09/08/2026
+DESCRIPTION
+DIT EQUIPMENT
+84556
+09/23/2026 ***1,000.00
+VOID AFTER 90 DAYS`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.check_no, '84556');
+  assert.equal(p.check_date, '2026-09-23');          // the date beside THAT number, not the invoice date
+  assert.equal(p.memo, 'Inv #2629');
+  assert.equal(p.gross, 1000);
+  // A number that repeats on the page (corner + remittance line) wins even
+  // when it sits nowhere near the amount.
+  const q = parseStub(`BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+INVOICE#
+2629
+09/08/2026
+***1,000.00
+DIT EQUIPMENT
+84556
+09/23/2026
+AUTHORIZED SIGNATURE
+09/23/2026 84556`);
+  assert.equal(q.check_no, '84556');
+  assert.equal(q.check_date, '2026-09-23');
+  assert.equal(q.memo, 'Inv #2629');
+});
+
+test('C9: a job-code line is never the employer; "Co" is a suffix only at the end of a name', () => {
+  const p = parseStub(`BRIGHT FUTURE
+100 SUNSET BLVD
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+***1,000.00
+84556
+09/23/2026
+DESCRIPTION
+JOB CO-12345-051 DIT EQUIPMENT
+VOID AFTER 90 DAYS`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.employer, 'BRIGHT FUTURE');
+  assert.match(p.payee, /EXAMPLE MEDIA CO/);
+  assert.match(p.earnings[0].type, /Equipment/);     // the description still classifies the check
+  const q = parseStub(`Acme Co.
+PAY TO THE ORDER OF Jane Doe $955.00
+Check No. 8841
+Date 09/12/2026`);
+  assert.equal(q.employer, 'Acme Co.');
+});
+
+test('C10: a payer named "... Media Services LLC" writing a check is a check, not a payroll stub', () => {
+  const p = parseStub(`Acme Media Services LLC
+0931
+ISSUED 09/04/2026
+PAY TO THE ORDER OF Example Media Co $1,900.00
+VOID AFTER 90 DAYS
+Memo: DIT equipment rental Inv#2627`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.gross, 1900);
+  assert.equal(p.check_no, '0931');
+  assert.equal(p.check_date, '2026-09-04');
+  assert.equal(p.employer, 'Acme Media Services LLC');
+  assert.match(p.memo, /Inv #2627/);
+  // Real payroll templates still win when their markers are present...
+  assert.equal(parseStub(wrapbook + '\nPAY TO THE ORDER OF Example Person\nVOID AFTER 90 DAYS $1.00').vendor, 'Wrapbook');
+  // ...and a Media Services payroll STUB (with a pay table) keeps its label.
+  assert.equal(parseStub('MEDIA SERVICES\nGross Pay $2,100.00\nNet Pay $1,850.55').vendor, 'Media Services');
+});
+
+test('C18: OCR letter-for-digit confusions inside amounts are repaired', () => {
+  assert.equal(parseMoney('$1,O00.00'), 1000);
+  assert.equal(parseMoney('*****2,OOO.OO'), 2000);
+  assert.equal(parseMoney('$l,250.00'), 1250);
+  assert.equal(parseMoney('$I,250.00'), 1250);
+  assert.equal(parseMoney('Co.'), null);             // a word stays a word
+  assert.equal(parseMoney('Inc'), null);
+  assert.equal(parseMoney('OOO.OO'), null);          // no real digit anywhere
+  assert.equal(parseMoney('$81.82/hr Los Angeles, CA'), 81.82);
+  const p = parseStub(`BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+*********2,OOO.OO
+84556
+09/23/2026
+VOID AFTER 90 DAYS`);
+  assert.equal(p.gross, 2000);
+  assert.equal(p.check_no, '84556');
+});
+
+test('C19: a memo naming both wages and gear sets mixed_memo; classification unchanged', () => {
+  const p = parseStub(`Streamline Media LLC
+1042
+09/12/2026
+PAY TO THE ORDER OF Example Media Co $2,155.00
+Memo: Riverton prep day + DIT equipment rental`);
+  assert.equal(p.vendor, 'check');
+  assert.equal(p.mixed_memo, true);
+  assert.match(p.earnings[0].type, /Equipment/);     // gear still wins the whole-check class
+  assert.equal(p.earnings[0].amount, 2155);
+  const gearOnly = parseStub(`Streamline Media LLC
+1042
+09/12/2026
+PAY TO THE ORDER OF Example Media Co $1,200.00
+Memo: DIT equipment rental inv 2629`);
+  assert.equal(gearOnly.mixed_memo, false);
+  const wagesOnly = parseStub(`PAY TO THE ORDER OF Jane Doe
+Check No. 8841
+Amount $955.00
+Date 09/12/2026
+Memo: Riverton day rate`);
+  assert.equal(wagesOnly.mixed_memo, false);
+  assert.match(wagesOnly.earnings[0].type, /Check payment/);
+  // Remittance DESCRIPTION lines count as the memo too.
+  const remit = parseStub(`BRIGHT FUTURE, LLC
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+***3,000.00
+84556
+09/23/2026
+DESCRIPTION
+JOB CO-12345-051 DIT EQUIPMENT
+JOB CO-12345-051 PREP DAY
+VOID AFTER 90 DAYS`);
+  assert.equal(remit.mixed_memo, true);
+  // Stubs (not checks) carry no flag at all.
+  assert.equal(parseStub(wrapbook).mixed_memo, undefined);
+});
+
+test('C20: generic stubs never take a street number from the line after "Paid by check"', () => {
+  const p = parseStub(`ACME PAYROLL SERVICES
+Pay Date: 09/04/2026
+Gross Pay $2,100.00
+Net Pay $1,850.55
+Paid by check
+1234 Sunset Blvd`);
+  assert.equal(p.vendor, '');
+  assert.equal(p.check_no, '');
+  assert.equal(p.gross, 2100);
+  // A stacked "Check No." label over a digits-only value still pairs.
+  const q = parseStub(`ACME PAYROLL SERVICES
+Gross Pay $2,100.00
+Check No.
+8841
+Check Date
+09/04/2026`);
+  assert.equal(q.check_no, '8841');
+  assert.equal(q.check_date, '2026-09-04');
+});
+
+test('check parse is invariant to the order OCR emits the blocks', async () => {
+  const { parseCheck } = await import('../js/parse.js');
+  // The fictional City-National-style check from above, as four blocks.
+  const bankHeader = `HOLD TO LIGHT TO VIEW THUE WATERMARK IN PAPER HEAT GENSITIVE RED LOCK DISAPPEARS WHEN HEATED
+Head Office Banking 310-555-0100
+400 North Roxbury Drive
+CITY NATIONAL BANK
+Beverly Hills, California 90210
+16-1606/1220`;
+  const payLine = `BRIGHT FUTURE, LLC
+100 SUNSET BLVD
+LOS ANGELES, CA 90028 310-555-0101
+PAY TO THE ORDER OF
+EXAMPLE MEDIA CO
+Two Thousand Dollars and 00/100
+MEMO
+84556
+09/23/2026
+*********2,000.00
+DOLLARS`;
+  const remittance = `EXAMPLE MEDIA CO
+DATE
+INVOICE# 09/08/2026 2629 09/14/2026 2630
+DESCRIPTION
+JOB CO-12345-051 DIT EQUIPMENT JOB CO-12345-051 DIT EQUIPMENT
+09/23/2026 84556
+PAYMENT
+1,000.00 1,000.00`;
+  const micr = `084556 00 0000000
+111111111''`;
+  const orders = [
+    [bankHeader, payLine, remittance, micr],
+    [remittance, bankHeader, payLine, micr],
+    [micr, remittance, payLine, bankHeader],
+    [payLine, micr, bankHeader, remittance],
+  ];
+  for (const blocks of orders) {
+    const p = parseCheck(blocks.join('\n'));
+    const label = blocks.map(b => b.slice(0, 12)).join(' | ');
+    assert.equal(p.check_no, '84556', label);
+    assert.equal(p.check_date, '2026-09-23', label);
+    assert.equal(p.gross, 2000, label);
+    assert.equal(p.employer, 'BRIGHT FUTURE', label);
+    assert.match(p.payee, /EXAMPLE MEDIA CO/, label);
+    assert.equal(p.memo, 'Inv #2629, #2630', label);   // MICR echo "084556" is not an invoice
+    assert.match(p.earnings[0].type, /Equipment/, label);
+  }
 });

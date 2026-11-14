@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchStub, rateVariants } from '../js/match.js';
+import { matchStub, rateVariants, isTie } from '../js/match.js';
 
 const jobs = [
   { id: 'a', project: 'Riverton', start_date: '2026-08-16', end_date: '2026-08-22',
@@ -148,4 +148,54 @@ test('short acronyms and tiny names do not create confident matches', () => {
   assert.ok(m.every(c => c.score < 70), JSON.stringify(m.map(c => [c.job.project, c.score])));
   const n = matchStub({ project_name: 'Next Level Chef', period_start: '2026-09-20', period_end: '2026-09-26', hourly_rates: [] }, js);
   assert.ok(n.find(c => c.job.id === 'y').score < 70);
+});
+
+// C2: a late gear check from a repeat client must not be handed to the most
+// recent job on the company name alone — two same-company jobs with the
+// same unpaid gear total are a tie the user breaks.
+const repeatClient = [
+  { id: 'A', project: 'Summer Spot', company: 'Bright Future LLC', start_date: '2026-07-20',
+    end_date: '2026-07-24', gear_total: 1000, gear_status: 'unpaid', wages_status: 'paid' },
+  { id: 'B', project: 'Fall Spot', company: 'Bright Future LLC', start_date: '2026-09-14',
+    end_date: '2026-09-18', gear_total: 1000, gear_status: 'unpaid', wages_status: 'paid' },
+];
+const lateGearCheck = { project_name: '', employer: 'BRIGHT FUTURE, LLC', job_title: '', memo: 'Inv #2629',
+  period_start: '', period_end: '', check_date: '2026-09-22', hourly_rates: [], gear_amount: 1000 };
+
+test('bare check: company name alone scores at most 25', () => {
+  const m = matchStub(lateGearCheck, repeatClient);
+  for (const c of m) assert.ok(c.parts.n <= 25, `${c.job.id} name score ${c.parts.n}`);
+  // Both jobs are still plausible candidates (name + gear amount + dates).
+  assert.equal(m.length, 2);
+});
+
+test('bare check from a repeat client: recent job gets no decisive lead', () => {
+  const m = matchStub(lateGearCheck, repeatClient);
+  const a = m.find(c => c.job.id === 'A'), b = m.find(c => c.job.id === 'B');
+  assert.ok(a && b);
+  assert.ok(b.score - a.score < 10, `B ${b.score} vs A ${a.score}`);   // app treats <10 as a tie
+  assert.ok(isTie(m), 'top two are the same company with the same gear total');
+  assert.ok(isTie(m, lateGearCheck));                                   // amount-based variant
+});
+
+test('isTie is false when the company or the gear total differs', () => {
+  const otherCo = repeatClient.map(j => j.id === 'A' ? { ...j, company: 'Other Pictures Inc' } : j);
+  assert.equal(isTie(matchStub(lateGearCheck, otherCo)), false);
+  const otherGear = repeatClient.map(j => j.id === 'A' ? { ...j, gear_total: 1500 } : j);
+  assert.equal(isTie(matchStub(lateGearCheck, otherGear)), false);
+  assert.equal(isTie([]), false);
+  assert.equal(isTie(matchStub(lateGearCheck, repeatClient.slice(1))), false);   // one candidate
+});
+
+// C14: entity suffixes never decide a name match.
+test('company names match exactly regardless of LLC / comma / case', () => {
+  const js = [{ id: 'bf', project: 'Fall Spot', company: 'Bright Future LLC',
+    start_date: '2026-09-14', end_date: '2026-09-18', gear_total: 1000, gear_status: 'unpaid' }];
+  const withPeriod = { project_name: '', period_start: '2026-09-14', period_end: '2026-09-18', hourly_rates: [] };
+  assert.equal(matchStub({ ...withPeriod, employer: 'BRIGHT FUTURE, LLC' }, js)[0].parts.n, 40);
+  assert.equal(matchStub({ ...withPeriod, employer: 'Bright Future LLC' }, js)[0].parts.n, 40);
+  assert.equal(matchStub({ ...withPeriod, employer: 'BRIGHT FUTURE' }, js)[0].parts.n, 40);   // parser trims after the comma
+  assert.equal(matchStub({ ...withPeriod, employer: 'Bright Future, Inc.' }, js)[0].parts.n, 40);
+  // A different company with the same suffix is still different.
+  assert.ok(matchStub({ ...withPeriod, employer: 'Dark Past LLC' }, js)[0].parts.n < 25);
 });

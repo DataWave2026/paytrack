@@ -38,8 +38,26 @@ window.addEventListener('storage', (e) => {
 export function isConnected() { return !!accessToken && Date.now() < expiresAt - 60000; }
 export function hasCredentials() { return !!settings().clientId; }
 
-function ensureClient() {
+// The sign-in library is loaded once by index.html. An app opened with no
+// signal (a basement stage) never got it — load it on demand instead of
+// being unable to sign in for the life of that app process.
+let gisLoading = null;
+function loadGis() {
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  if (gisLoading) return gisLoading;
+  gisLoading = new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://accounts.google.com/gsi/client';
+    sc.async = true;
+    sc.onload = () => res();
+    sc.onerror = () => rej(new Error('Google sign-in library could not be loaded — check your connection and retry.'));
+    document.head.appendChild(sc);
+  }).finally(() => { gisLoading = null; });
+  return gisLoading;
+}
+async function ensureClient() {
   if (tokenClient) return tokenClient;
+  await loadGis();
   if (!window.google?.accounts?.oauth2) throw new Error('Google sign-in library not loaded yet — check your connection and retry.');
   if (!settings().clientId) throw new Error('No OAuth Client ID configured (see Setup tab).');
   tokenClient = google.accounts.oauth2.initTokenClient({
@@ -55,13 +73,15 @@ function ensureClient() {
 // pushes — would hang until reload). Each new request rejects the pending
 // one, and every request times out.
 let pendingReject = null;
-function requestToken(promptMode) {
+async function requestToken(promptMode) {
+  const client = await ensureClient();
   return new Promise((resolve, rejectRaw) => {
     if (pendingReject) pendingReject(new Error('superseded by a newer sign-in request'));
-    const timer = setTimeout(() => reject(new Error('sign-in timed out')), 90000);
+    // Silent renewal is quick; a first sign-in (account chooser, consent,
+    // a 2FA code from another device) can take minutes.
+    const timer = setTimeout(() => reject(new Error('sign-in timed out')), promptMode === 'none' ? 90000 : 5 * 60000);
     const reject = (e) => { clearTimeout(timer); if (pendingReject === reject) pendingReject = null; rejectRaw(e); };
     pendingReject = reject;
-    const client = ensureClient();
     client.callback = (resp) => {
       clearTimeout(timer);
       if (pendingReject === reject) pendingReject = null;
@@ -100,8 +120,11 @@ function inUserGesture() {
 }
 
 // Interactive connect (user taps the button — may show Google popup).
-export function connect() {
+export async function connect() {
   lastRefreshFail = 0;   // a deliberate connect resets the silent-refresh backoff
+  // A silent renewal already in flight (the same tap's capture handler
+  // started it) is reused instead of opening a second popup that cancels it.
+  if (refreshInFlight && await refreshInFlight) return accessToken;
   return requestToken('');
 }
 
@@ -126,10 +149,23 @@ export async function trySilentRefresh() {
   refreshInFlight = requestToken('none')
     .then(() => true)
     .catch((e) => {
-      lastRefreshFail = Date.now();
+      // A request superseded by the user's own Connect tap is not a failure.
+      if (!/superseded/.test(e.message)) lastRefreshFail = Date.now();
       log('auth:silent', { ok: false, msg: String(e.message).slice(0, 160) });
       return false;
     })
+    .finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+// Before a long operation (a scan uploads for 20-60 s): renew a token that is
+// about to expire while we are still inside the user's tap. The old token is
+// kept when the renewal fails, so nothing is lost by trying.
+export async function ensureFresh(windowMs = 5 * 60 * 1000) {
+  if (!accessToken || !needsRefreshSoon(windowMs) || !inUserGesture()) return isConnected();
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = requestToken('none').then(() => true)
+    .catch((e) => { log('auth:early', { ok: false, msg: String(e.message).slice(0, 120) }); return isConnected(); })
     .finally(() => { refreshInFlight = null; });
   return refreshInFlight;
 }

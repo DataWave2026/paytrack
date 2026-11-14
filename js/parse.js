@@ -30,7 +30,12 @@ export function parseDate(s) {
 
 export function parseMoney(s) {
   if (s === null || s === undefined) return null;
-  const t = String(s).replace(/[,\s]/g, '');
+  let t = String(s).replace(/[,\s]/g, '');
+  // OCR reads a printed 0 as O and a 1 as l/I ("$1,O00.00", "*****2,OOO.OO").
+  // Map them back — but only inside a token that still holds a real digit,
+  // so words ("Co.", "Inc") never turn into money.
+  t = t.replace(/\$?[\dOoIl]+(?:\.[\dOoIl]+)?/g, tok => /\d/.test(tok)
+    ? tok.replace(/[Oo]/g, '0').replace(/[Il]/g, '1') : tok);
   // Dates and routing fragments ("09/08/2026", "16-1606/1220") are not money.
   if (/\d[\/]\d/.test(t) || /\d-\d{3,}/.test(t)) return null;
   const m = t.match(/\$?(\d+(?:\.\d{1,2})?|\.\d{1,2})/);
@@ -216,8 +221,12 @@ function parseGenericInto(p, text) {
   if (!p.net) p.net = parseMoney(labeled(ls, /net\s+(earnings|pay|wages|amount)/i, isMoney));
   if (!p.check_date) p.check_date = parseDate(labeled(ls, /check\s+date|pay\s+date|date\s+of\s+payment/i, isDate));
   if (!p.check_no) {
-    const m = text.match(/check\s*(?:no\.?|number|#)?\s*[:#]?\s*(\d{4,})/i);
+    // Same line only — "Paid by check\n1234 Sunset Blvd" is an address, not
+    // a check number. A stacked label ("Check No." over its value) is read
+    // by the label/value pairing, which demands a digits-only value.
+    const m = text.match(/check[ \t]*(?:no\.?|number|#)?[ \t]*[:#]?[ \t]*(\d{4,})/i);
     if (m) p.check_no = m[1];
+    else p.check_no = labeled(ls, /check\s+(?:no\.?|number|#)/i, v => /^#?\d{4,}$/.test(v.trim())).replace(/^#/, '');
   }
   if (!p.period_start) {
     p.period_start = parseDate(labeled(ls, /(work\s+)?period\s+(start|begin(ning)?)(\s+date)?/i, isDate));
@@ -475,12 +484,17 @@ function parseWrapbook(text) {
   return p;
 }
 
+// Payroll vendors with a real template: their markers identify the document
+// outright, even with a check portion attached.
 const VENDORS = [
   { re: /wrapbook/i, fn: parseWrapbook },
-  // Cast & Crew / Entertainment Partners / GreenSlate templates get added
-  // here as real stubs from those vendors arrive; generic covers them until then.
   { re: /cast\s*&?\s*crew|castandcrew|new\s+caps,?\s+llc/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Cast & Crew' }, t) },
   { re: /entertainment\s+partners|\bEP\s+payroll|www\.ep\.com/i, fn: parseEP },
+];
+// Vendors known only by name: the generic reader plus a label. Checked AFTER
+// the check detector — a production company called "Acme Media Services LLC"
+// writing a check is a check, not a payroll stub.
+const LABELLED_VENDORS = [
   { re: /greenslate/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'GreenSlate' }, t) },
   { re: /media\s+services/i, fn: t => parseGenericInto({ ...blankParse(), vendor: 'Media Services' }, t) },
 ];
@@ -636,50 +650,89 @@ export function parseCheck(text) {
   // security boilerplate. Fall back to the block above "pay to the order of".
   const sqz = (s) => (s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
   const payeeSq = sqz(p.payee);
+  // Job codes ("JOB CO-12345-051 DIT EQUIPMENT") and remittance headers
+  // describe the work, never the payer.
+  const jobcodey = (l) => /\b[A-Z]{2,3}-\d{3,}/.test(l) || /^(job\b|description)/i.test(l);
   const companyish = (l) =>
     /[A-Za-z]{3}/.test(l)
     && !boiler.test(l) && !addressy.test(l) && !banky.test(l) && !securityish.test(l)
+    && !jobcodey(l)
     && !parseDate(l) && !/[\d,]+\.\d{2}/.test(l)
     && !(payeeSq && (sqz(l).includes(payeeSq) || payeeSq.includes(sqz(l))));
-  const suffixy = /\b(llc|inc|ltd|corp|co|company|pictures?|productions?|media|studios?|films?|entertainment|network|group|partners)\b\.?/i;
+  // "Co" is an entity suffix only as the word that ENDS the name ("Acme Co",
+  // "Acme Co.", "Acme Co, 1 Main St") — never the CO of a job code.
+  const suffixy = /\b(llc|inc|ltd|corp|company|pictures?|productions?|media|studios?|films?|entertainment|network|group|partners)\b\.?|\bco(?=[.,]|\s*$)/i;
   const topLines = ls.slice(0, payIdx > 0 ? payIdx : 6).filter(companyish);
   p.employer = (ls.filter(companyish).find(l => suffixy.test(l))
     || topLines.find(l => l.replace(/[^A-Za-z]/g, '').length >= 6)
     || '').replace(/,.*$/, '')
     // Fused account digits ("BRIGHT FUTURE0000000000") are not part of a name.
     .replace(/(\D)\d{6,}.*$/, '$1').trim();
-  // Amount: labeled, else the largest money figure on the page — checks
-  // print it $-prefixed, asterisk-protected (******2,000.00), or bare.
-  // A labelled amount must look like money ("$955.00"), not an invoice number
-  // that happens to follow an AMOUNT column header.
-  let amt = parseMoney(labeled(ls, /amount/i, v => isMoney(v) && /\$|\.\d{2}\b/.test(v)));
-  if (amt === null) {
-    const body = ls.filter(l => !/ytd|year\s+to\s+date|not\s+valid|or\s+more|over\s+\$/i.test(l)).join('\n');
-    const all = [...body.matchAll(/(?:\$|\*+|^|\s)([\d,]+\.\d{2})\b/gm)]
-      .map(m => parseFloat(m[1].replace(/,/g, '')));
-    if (all.length) amt = Math.max(...all);
+  // Amount: checks print it $-prefixed or asterisk-protected ("$1,900.00",
+  // "******2,000.00") — the largest such figure IS the check amount. A
+  // labelled "Amount" value counts only when it is at least that large: on a
+  // joint payment the remittance AMOUNT column lists the per-invoice parts
+  // (1,000.00 / 1,000.00) under the one 2,000.00 check. With neither marker
+  // nor label, fall back to the largest bare money figure. (OCR'd O/l/I
+  // inside a marked figure are tolerated — parseMoney maps them back.)
+  const MARKED_MONEY = /(?:\$|\*+)\s?([\dOoIl][\dOoIl,]*\.[\dOoIl]{2})\b/g;
+  const body = ls.filter(l => !/ytd|year\s+to\s+date|not\s+valid|or\s+more|over\s+\$/i.test(l)).join('\n');
+  const figures = (re) => [...body.matchAll(re)].map(m => parseMoney(m[1])).filter(v => v !== null);
+  const marked = figures(MARKED_MONEY);
+  const labelledAmt = parseMoney(labeled(ls, /amount/i, v => isMoney(v) && /\$|\.\d{2}\b/.test(v)));
+  let amt = marked.length ? Math.max(...marked) : null;
+  if (amt !== null) { if (labelledAmt !== null && labelledAmt >= amt) amt = labelledAmt; }
+  else if (labelledAmt !== null) amt = labelledAmt;
+  else {
+    const bare = figures(/(?:^|\s)([\d,]+\.\d{2})\b/gm);
+    if (bare.length) amt = Math.max(...bare);
   }
   p.gross = amt; p.net = amt;
-  // Check number: labeled, else a standalone 3-6 digit line (corner number).
   // Check number, most reliable source first: an explicit "Check No/#" on
-  // one line; the standalone corner number; a bare "No. 123" that is not an
-  // invoice number. Never across a line break ("eCheck\n1234 Sunset Blvd").
+  // one line (never across a line break: "eCheck\n1234 Sunset Blvd"); then
+  // the standalone 3-6 digit corner number. Invoice numbers OCR as standalone
+  // lines too, so among them prefer the one that REPEATS on the page (the
+  // check number prints in the corner and again on the remittance stub),
+  // then the one beside the amount, then one not sitting under an INVOICE
+  // label, then simply the first. Last resort: a bare "No. 123" that is not
+  // an invoice number.
   const num = text.match(/(?:check|cheque)[ \t]*(?:no\.?|number|#)[ \t]*[:#]?[ \t]*(\d{3,10})\b/i);
   if (num) p.check_no = num[1];
+  const wordRe = (n) => new RegExp(`(^|\\D)${n}(\\D|$)`);
   if (!p.check_no) {
-    const solo = ls.find(l => /^#?\d{3,6}$/.test(l.trim()));
-    if (solo) p.check_no = solo.trim().replace(/^#/, '');
+    const amtLines = ls.map((l, i) => (new RegExp(MARKED_MONEY.source).test(l) ? i : -1)).filter(i => i >= 0);
+    const seen = new Set();
+    let best = '', bestRank = -1;
+    ls.forEach((l, i) => {
+      const m = l.match(/^#?(\d{3,6})$/);
+      if (!m || seen.has(m[1])) return;
+      seen.add(m[1]);
+      const re = wordRe(m[1]);
+      const repeats = ls.filter(x => re.test(x)).length >= 2;
+      const nearAmt = amtLines.some(a => Math.abs(a - i) <= 1);
+      const underInv = i > 0 && /\binv(oice)?s?\b/i.test(ls[i - 1]);
+      const rank = (repeats ? 4 : 0) + (nearAmt ? 2 : 0) + (underInv ? 0 : 1);
+      if (rank > bestRank) { bestRank = rank; best = m[1]; }
+    });
+    if (best) p.check_no = best;
   }
   if (!p.check_no) {
     const bare = ls.map(l => /inv(oice)?/i.test(l) ? null : l.match(/\bno\.?[ \t]*[:#]?[ \t]*(\d{3,10})\b/i)).find(Boolean);
     if (bare) p.check_no = bare[1];
   }
-  // Check date: the date printed NEXT TO the check number wins — the first
-  // date on the page is often an invoice date on the remittance stub.
+  // Check date: the date printed WITH the check number wins (same line);
+  // then an explicit "Issued"/"Check Date" label; then the date on the line
+  // right beside the number (the corner prints the number over the date),
+  // skipping invoice lines; else the first date on the page — which is often
+  // an invoice date on the remittance stub, hence last.
   let cdate = '';
   if (p.check_no) {
-    const near = ls.find(l => l.includes(p.check_no) && allDates(l).length);
-    if (near) cdate = allDates(near)[0];
+    const re = wordRe(p.check_no);
+    const at = ls.map((l, i) => (re.test(l) ? i : -1)).filter(i => i >= 0);
+    const dateOn = (i) => (ls[i] && !/\binv(oice)?s?\b/i.test(ls[i]) ? allDates(ls[i])[0] : '') || '';
+    cdate = at.map(i => allDates(ls[i])[0]).find(Boolean)
+      || parseDate(labeled(ls, /issued?|check\s+date/i, isDate))
+      || at.flatMap(i => [dateOn(i + 1), dateOn(i - 1)]).find(Boolean) || '';
   }
   p.check_date = cdate
     || parseDate(labeled(ls, /issued?|check\s+date/i, isDate))
@@ -713,8 +766,11 @@ export function parseCheck(text) {
       .replace(/[\d,]*\.\d{2}\b/g, ' ')                   // money
       .replace(/[A-Za-z]+-[\d-]+/g, ' ')                  // job codes (CO-12345-051)
       .replace(/inv(oice)?s?\s*#?/ig, ' ');
+    // (the MICR line echoes the check number with a leading zero — "084556"
+    // is not an invoice either)
+    const sameNo = (n) => n.replace(/^0+/, '') === p.check_no.replace(/^0+/, '');
     invoices = [...new Set([...stripped.matchAll(/\b(\d{3,6})\b/g)].map(m => m[1]))]
-      .filter(n => n !== p.check_no);
+      .filter(n => n !== p.check_no && !sameNo(n));
   }
   // Memo gets its own field (a check has no job title) — invoice numbers
   // and any memo text, shown under Company on the confirm screen.
@@ -723,10 +779,21 @@ export function parseCheck(text) {
   // Whole-check classification: checks are short documents, so equipment
   // words anywhere (memo or remittance description) mean a gear payment.
   // (address lines are excluded — "P.O. Box 4410" is not a box rental)
-  const gearText = ls.filter(l => !/p\.?\s*o\.?\s*box|lock\s*box/i.test(l) && !addressy.test(l)).join('\n');
-  const gearish = /\b(equip\w*|gear|rental|kit|box|digitech)\b/i.test(gearText) || /\beq\b/i.test(memo);
+  const GEAR_WORDS = /\b(equip\w*|gear|rental|kit|box|digitech)\b/i;
+  const notPoBox = (l) => !/p\.?\s*o\.?\s*box|lock\s*box/i.test(l);
+  const gearText = ls.filter(l => notPoBox(l) && !addressy.test(l)).join('\n');
+  const gearish = GEAR_WORDS.test(gearText) || /\beq\b/i.test(memo);
   p.earnings = [{ type: gearish ? 'Equipment rental (check)' : 'Check payment',
     hours: null, rate: null, amount: p.gross }];
+  // A memo naming BOTH wages and gear ("Riverton prep day + DIT equipment")
+  // is one check paying two kinds of money. Flagged for the confirm screen
+  // to warn on; the whole-check classification above is left as it is.
+  // The "memo" is the MEMO line plus the remittance DESCRIPTION lines.
+  const di = ls.findIndex(l => /^description\b/i.test(l));
+  const descZone = di >= 0 ? ls.slice(di + 1, di + 5).filter(l => /[A-Za-z]{3}/.test(l) && notPoBox(l)) : [];
+  const memoZone = [memo, ...descZone].filter(Boolean).join('\n');
+  const wagey = /\b(day\s+rate|rate|wages?|prep|wrap|labou?r)\b/i.test(memoZone);
+  p.mixed_memo = wagey && (GEAR_WORDS.test(memoZone) || /\beq\b/i.test(memoZone));
   return p;
 }
 
@@ -740,6 +807,11 @@ export function parseStub(text) {
   // check whose memo says "rental" or "prep day" is still a check)
   const hasPayTable = /earning\s+type|gross\s+(earnings|pay|wages)|desc\s+hours\s+amount|total\s+hours|net\s+(pay|wages|earnings)|\bdeductions\b|\bytd\b/i.test(text);
   if (looksLikeCheck(text) && !hasPayTable) return parseCheck(text);
+  // Name-only vendors come after the check detector: a payer whose name
+  // happens to contain "Media Services" is still writing a check.
+  for (const v of LABELLED_VENDORS) {
+    if (v.re.test(text)) return v.fn(text);
+  }
   return parseGenericInto(blankParse(), text);
 }
 
@@ -749,10 +821,14 @@ export function parseJobNote(note) {
   const out = { rate_amount: null, rate_hours: null, rate_text: '', gear_total: null,
     gear_rate: null, gear_period: null, wages_status: null, gear_status: null };
   if (!note) return out;
-  // "partially paid" must be tested before "paid".
+  // "partially paid" must be tested before "paid"; every way of saying "not
+  // paid" ("not paid", "un-paid", "owed", "outstanding", "due") before that;
+  // and "paid?" is a question, not a status — it falls to the default.
+  const UNPAID = /not\s+(?:yet\s+)?paid|not\s+yet|un-?paid|pending|waiting|\bowed\b|outstanding|\bdue\b/i;
   const stat = (t, dflt) => /partial/i.test(t) ? 'partial'
-    : /not\s+yet|unpaid|pending|waiting/i.test(t) ? 'unpaid'
-      : /paid/i.test(t) ? 'paid' : dflt;
+    : UNPAID.test(t) ? 'unpaid'
+      : /paid\s*\?/i.test(t) ? dflt
+        : /paid/i.test(t) ? 'paid' : dflt;
 
   // "$1200/gear paid", "$1250/day gear not yet paid", "$1500/wk for gear".
   // The amount must carry a $ or sit directly before "/gear" — "Sept 12 gear
@@ -767,7 +843,10 @@ export function parseJobNote(note) {
     out.gear_status = stat(gear[5], 'unpaid');
   } else {
     const bare = note.match(/\bgear\b([^,;.]*)/i);
-    if (bare && /paid|not\s+yet|unpaid/i.test(bare[1])) out.gear_status = stat(bare[1], 'paid');
+    if (bare && (/paid/i.test(bare[1]) || UNPAID.test(bare[1]))) {
+      const s = stat(bare[1], null);          // "gear paid?" stays unknown
+      if (s) out.gear_status = s;
+    }
   }
   const noteNoGear = gear ? note.replace(gear[0], '') : note;
 
@@ -791,9 +870,9 @@ export function parseJobNote(note) {
     }
     if (!out.wages_status) {
       if (/wages?\s+partially\s+paid/i.test(noteNoGear)) out.wages_status = 'partial';
-      else if (/wages?\s+paid/i.test(noteNoGear)) out.wages_status = 'paid';
-      else if (/not\s+yet\s+paid|unpaid/i.test(noteNoGear)) out.wages_status = 'unpaid';
-      else if (/\bpaid\b/i.test(noteNoGear)) out.wages_status = 'paid';
+      else if (/wages?\s+paid\b(?!\s*\?)/i.test(noteNoGear)) out.wages_status = 'paid';
+      else if (UNPAID.test(noteNoGear)) out.wages_status = 'unpaid';
+      else if (/\bpaid\b(?!\s*\?)/i.test(noteNoGear)) out.wages_status = 'paid';
     }
   }
   return out;

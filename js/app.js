@@ -4,7 +4,7 @@ import * as auth from './auth.js';
 import * as g from './google.js';
 import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
-import { matchStub, matchDebug } from './match.js';
+import { matchStub, matchDebug, isTie } from './match.js';
 import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
   gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf } from './money.js';
 import { log, dump, clearLog } from './log.js';
@@ -15,10 +15,22 @@ window.addEventListener('unhandledrejection', (e) =>
   log('unhandled', { msg: String(e.reason?.message || e.reason).slice(0, 200) }));
 
 // ---------- tiny DOM helper ----------
+// Async button handlers run once at a time: the button is disabled until the
+// handler settles (a double-tap used to create a 4-week job twice).
+function busyGuard(fn) {
+  return async function (e) {
+    const b = e.currentTarget;
+    if (b && b.dataset.busy) return;
+    if (b) { b.dataset.busy = '1'; b.disabled = true; }
+    try { return await fn.call(this, e); }
+    finally { if (b) { delete b.dataset.busy; b.disabled = false; } }
+  };
+}
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') el.className = v;
+    else if (k === 'onclick' && tag === 'button' && v && v.constructor && v.constructor.name === 'AsyncFunction') el.addEventListener('click', busyGuard(v));
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) el.setAttribute(k, v);
   }
@@ -134,7 +146,10 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 // session has actually expired (the renewal popup flashes briefly; keep that
 // to at most ~once an hour, never pre-emptively).
 let lastRefreshTry = 0;
-document.addEventListener('click', () => {
+document.addEventListener('click', (e) => {
+  // The dot and the Connect buttons open the real popup themselves — a silent
+  // attempt from the same tap would only cancel it.
+  if (e.target?.closest?.('#conn-status, [data-connect]')) return;
   if (!settings().everConnected) return;
   if (auth.isConnected()) return;
   const now = Date.now();
@@ -262,7 +277,7 @@ function emptyHint() {
       h('button', { class: 'primary', onclick: async () => {
         try { await auth.connect(); toast('Connected — syncing…'); await backgroundSync(); render('home'); }
         catch (e) { toast(e.message, 6000); }
-      } }, 'Connect Google'));
+      }, 'data-connect': '1' }, 'Connect Google'));
   }
   return h('p', { class: 'muted' }, 'No completed jobs yet. Add one in the Jobs tab, or import your calendar history from the Import tab.');
 }
@@ -292,7 +307,7 @@ function jobRow(job, stubsByJob) {
         onclick: async (e) => {
           e.stopPropagation();
           job.job_status = 'confirmed';
-          await store.putJob(job);
+          await store.patchJob(job.id, { job_status: 'confirmed' });
           sync.pushSoon(job).catch(() => {});
           toast(`${job.project} confirmed — now a tracked job.`);
         },
@@ -305,7 +320,7 @@ function jobRow(job, stubsByJob) {
         onclick: async (e) => {
           e.stopPropagation();
           job.invoice_status = job.invoice_status === 'unsent' ? 'sent' : 'unsent';
-          await store.putJob(job);
+          await store.patchJob(job.id, { invoice_status: job.invoice_status });
           sync.pushSoon(job).catch(() => {});
           toast(job.invoice_status === 'sent'
             ? 'Invoice marked sent — reminder removed.'
@@ -556,7 +571,12 @@ function nextPartName(name) {
 
 async function editJob(existing, prefill) {
   overlayOpen = true;
-  const job = existing ? { ...existing } : (prefill || store.blankJob());
+  // Deep copies: the form edits `job`, `base` remembers how it looked when the
+  // form opened, and Save applies only the difference onto the freshest stored
+  // record — a form left open while another device saved never overwrites that
+  // device's work.
+  const job = existing ? JSON.parse(JSON.stringify(existing)) : (prefill || store.blankJob());
+  const base = existing ? JSON.parse(JSON.stringify(existing)) : null;
   let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
     value: job[key] ?? '', ...attrs,
@@ -844,8 +864,8 @@ async function editJob(existing, prefill) {
         }
         for (const j of toSave) {
           calcGearTotal(j);
-          await store.putJob(j);
-          sync.pushSoon(j).catch(e => { if (e.code !== 'NEEDS_CONNECT') toast('Calendar sync: ' + e.message, 5000); });
+          const saved = base && j.id === base.id ? await store.updateJob(j.id, j, base) : await store.putJob(j);
+          sync.pushSoon(saved).catch(e => { if (e.code !== 'NEEDS_CONNECT') toast('Calendar sync: ' + e.message, 5000); });
         }
         toast(toSave.length > 1 ? `Saved ${toSave.length} weekly entries.` : 'Saved.');
         render('jobs');
@@ -861,7 +881,7 @@ async function editJob(existing, prefill) {
         job.keep_cal = true;
         job.calendar_event_id = '';
         job.calendar_event_ids = [];
-        await store.putJob(job);
+        await store.patchJob(job.id, { deleted: true, keep_cal: true, calendar_event_id: '', calendar_event_ids: [] });
         sync.pushSoon(job).catch(() => {});  // clears reminders only
         toast('Removed from the app; calendar untouched.');
         render('jobs');
@@ -873,7 +893,7 @@ async function editJob(existing, prefill) {
         log('jobRemoved', { project: job.project, mode: 'full' });
         await repointStubs(job);
         job.deleted = true;
-        await store.putJob(job);
+        await store.patchJob(job.id, { deleted: true });
         sync.pushSoon(job).catch(() => {});
         render('jobs');
       },
@@ -1346,6 +1366,7 @@ async function runStubPipeline(file) {
     // Google's consent popup can only open from a gesture (esp. iPhone PWA),
     // so a mid-pipeline expiry used to kill the whole scan.
     setStage('Checking Google connection…');
+    await auth.ensureFresh();   // a 20-60 s upload must not outlive the token
     await auth.token();
     setStage('Preparing photo…');
     const img = file.type === 'application/pdf' ? file : await normalizeImage(file);
@@ -1459,6 +1480,10 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     }
   }
   const payeeNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
+  if (p.mixed_memo) {
+    payeeNote.append(h('span', { style: 'display:block;color:var(--warn)' },
+      'The memo mentions both labor and gear — check the earnings lines below are split between wages and equipment.'));
+  }
   if (p.payee) {
     if (p.paid_to === 'company') payeeNote.textContent = `Made out to "${p.payee}" — your company ✓`;
     else if (p.paid_to === 'me') payeeNote.textContent = `Made out to "${p.payee}" — you personally ✓`;
@@ -1588,6 +1613,9 @@ async function pickMatch(p, uploaded, ocrText) {
     .filter(s => !(p.check_no && s.check_no === p.check_no));
   window.__pickMatchOpen = true;   // dev/testing hook marker
   const jobsList = await store.allJobs();
+  // How every job looked when this screen opened: a save applies only what
+  // this screen changed onto the freshest stored copy (see store.updateJob).
+  const bases = new Map(jobsList.map(j => [j.id, JSON.parse(JSON.stringify(j))]));
   const stubGear = gearOnStub(p.earnings);
   // A gear-only stub (kit/box rental with no wage lines) pays gear, not wages.
   const gearOnly = stubGear > 0
@@ -1611,8 +1639,12 @@ async function pickMatch(p, uploaded, ocrText) {
   // default to "create a new job" so a stale selection never sticks.
   // …and only when it clearly beats the runner-up: two jobs scoring within
   // 10 points is a tie the user should break, not the app.
+  // Auto-pick only a clear winner — and never when the top two are the same
+  // company with the same gear total (a late gear check from a repeat client
+  // used to land on the newer job).
   let chosen = candidates[0] && candidates[0].score >= 70
-    && (!candidates[1] || candidates[0].score - candidates[1].score >= 10) ? candidates[0].job : null;
+    && (!candidates[1] || candidates[0].score - candidates[1].score >= 10)
+    && !isTie(candidates, p) ? candidates[0].job : null;
 
   // One check can pay TWO jobs (two invoices, same company). If no single
   // job's gear total matches but a PAIR of unpaid-gear jobs sums to this
@@ -1877,7 +1909,7 @@ async function pickMatch(p, uploaded, ocrText) {
               matched_job_id: job.id,
               ocr_text_excerpt: (ocrText || '').slice(0, 2000),
             });
-            await store.putJob(job);
+            await store.updateJob(job.id, job, bases.get(job.id));
             sync.pushSoon(job).catch(() => {});
           }
           log('stubSplitSaved', { check: p.check_no || '', jobs: [chosen.project, chosen2.project], amts: [amt1, amt2] });
@@ -1886,7 +1918,8 @@ async function pickMatch(p, uploaded, ocrText) {
           render('home');
           return;
         }
-        let job = chosen;
+        let job = chosen ? JSON.parse(JSON.stringify(chosen)) : null;
+        const jobBase = chosen ? bases.get(chosen.id) : null;
         if (!job) {
           // Job was never logged (user error) but the payment came through:
           // create it from the stub and it gets pushed to the calendar as
@@ -1984,7 +2017,7 @@ async function pickMatch(p, uploaded, ocrText) {
           const line = `Paid ${p.check_date}${p.check_no ? `, check #${p.check_no}` : ''}${extras ? ` (${extras})` : ''}`;
           if (!job.notes.includes(line)) job.notes = job.notes ? `${job.notes}\n${line}` : line;
         }
-        await store.putJob(job);
+        job = jobBase ? await store.updateJob(job.id, job, jobBase) : await store.putJob(job);
         // The same check scanned again UPDATES its existing record — one
         // record per (check, job), so a previously-split check keeps both
         // halves and a re-scan lands on the right one.
@@ -2234,7 +2267,7 @@ async function settingsView() {
       h('h2', {}, 'Google connection'),
       h('p', { class: 'muted small' }, 'One-time: create an OAuth Client ID in Google Cloud console (see README) and paste it here. Your data never leaves your own Google account.'),
       h('label', {}, 'OAuth Client ID'), clientIdInput,
-      h('button', {
+      h('button', { 'data-connect': '1',
         class: 'primary', onclick: async () => {
           try {
             await auth.connect();
@@ -2375,7 +2408,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v113';
+const APP_VERSION = 'v114';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

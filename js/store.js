@@ -143,6 +143,29 @@ export async function putJob(job, { silent = false, keepStamp = false } = {}) {
   return job;
 }
 
+// Apply the fields an edit CHANGED (edited vs the snapshot `base` it started
+// from) onto the freshest stored copy — never the whole stale snapshot. A form
+// left open while another device saved used to overwrite that device's work
+// with everything the form happened to hold. Without `base`, every key of
+// `edited` is applied (a plain field patch).
+export async function updateJob(id, edited, base) {
+  let out;
+  await rmw('jobs', id, (prev) => {
+    if (!prev) { out = { ...edited, updated_at: laterStamp(edited.updated_at) }; return out; }
+    const fresh = { ...prev };
+    for (const k of Object.keys(edited)) {
+      if (k === 'updated_at' || k === 'id') continue;
+      if (!base || JSON.stringify(edited[k] ?? null) !== JSON.stringify(base[k] ?? null)) fresh[k] = edited[k];
+    }
+    fresh.updated_at = laterStamp(prev.updated_at);
+    out = fresh;
+    return fresh;
+  });
+  changed();
+  return out;
+}
+export const patchJob = (id, patch) => updateJob(id, patch, null);
+
 // Read-modify-write inside one transaction: fn(prev) returns the record to
 // store (or nothing to leave the store untouched).
 async function rmw(storeName, id, fn) {
