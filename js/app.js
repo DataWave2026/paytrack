@@ -85,15 +85,43 @@ const views = { home, jobs, stub, review, settings: settingsView };
 // away what the user is typing.
 let overlayOpen = false;
 let allJobsOpen = false;
+let renderGen = 0;
 async function render(name) {
   const keepScroll = !name;          // a background refresh keeps the position
+  // A nameless (background) refresh never replaces an open editor/form.
+  if (!name && overlayOpen) return;
   if (name) overlayOpen = false;     // explicit navigation closes any overlay
   currentView = name || currentView;
   document.querySelectorAll('#tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === currentView));
   const top = viewEl.scrollTop;
-  viewEl.replaceChildren(await views[currentView]());
+  const gen = ++renderGen;
+  let node;
+  try {
+    node = await views[currentView]();
+  } catch (e) {
+    log('renderErr', { view: currentView, msg: String(e.message).slice(0, 200) });
+    node = h('div', { class: 'card' },
+      h('h3', {}, 'This screen could not be drawn'),
+      h('p', { class: 'muted' }, String(e.message)),
+      h('button', { class: 'btn', onclick: () => render('settings') }, 'Open Setup (bug report, force update)'));
+  }
+  // A render that finished after a newer one started, or after the user opened
+  // an editor meanwhile, must not land on top of it.
+  if (gen !== renderGen || (!name && overlayOpen)) return;
+  viewEl.replaceChildren(node);
   viewEl.scrollTop = keepScroll ? top : 0;
+  if (name) maybeReloadForUpdate();
+}
+
+// A new app version never reloads the page while a form, a scan or a sync is
+// in progress — it waits for the next explicit navigation.
+let reloadPending = false;
+let scanInFlight = false;
+function maybeReloadForUpdate() {
+  if (!reloadPending || overlayOpen || scanInFlight || syncInFlight) return;
+  reloadPending = false;
+  location.reload();
 }
 
 document.getElementById('tabs').addEventListener('click', (e) => {
@@ -1294,7 +1322,8 @@ function clearPendingScan() { try { localStorage.removeItem('paytrack.pendingSca
 
 async function runStubPipeline(file) {
   overlayOpen = true;
-  if (!auth.hasCredentials()) { toast('Connect Google in Setup first.'); return; }
+  scanInFlight = true;
+  if (!auth.hasCredentials()) { scanInFlight = false; toast('Connect Google in Setup first.'); return; }
   const stage = h('span', {}, ' Starting…');
   viewEl.replaceChildren(h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), stage));
   const setStage = (t) => { stage.textContent = ' ' + t; };
@@ -1352,8 +1381,10 @@ async function runStubPipeline(file) {
         .filter(k => parsed[k] !== '' && parsed[k] !== null).join(','),
       earn: parsed.earnings.length,
     });
+    scanInFlight = false;
     confirmStubForm(parsed, null, text);
   } catch (e) {
+    scanInFlight = false;
     log('scanFail', { msg: String(e.message).slice(0, 200) });
     pushDiagnostics(true).catch(() => {});
     toast(/40[03]/.test(e.message)
@@ -1884,6 +1915,13 @@ async function pickMatch(p, uploaded, ocrText) {
           const cov = wageCoverage(job, [...others, { gross: p.gross, earnings: p.earnings, work_dates: covered }]);
           if (cov.tracked) job.wages_status = cov.unpaid.length ? 'partial' : 'paid';
         }
+        // The invoice flag follows the payment that proves it: a gear check
+        // means the invoice went out; payroll wages on a job with no gear
+        // never needed one. A gear job paid only its wages keeps nagging.
+        if (chosen && job.invoice_status === 'unsent') {
+          if (stubGear > 0 && markGearPaid) job.invoice_status = 'sent';
+          else if (markPaid && job.gear_status === 'na') job.invoice_status = 'na';
+        }
         // Attribute the payment. The parser (or the user, via the selector)
         // decided from the Name on the stub; fall back to classification.
         const sq = (s) => (s || '').replace(/\s/g, '').toLowerCase();
@@ -2304,7 +2342,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v111';
+const APP_VERSION = 'v112';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2473,22 +2511,35 @@ async function pushDiagnostics(force = false) {
   } catch (e) { log('diagUpErr', { msg: String(e.message).slice(0, 120) }); }
 }
 
-// A job that is still running, whose weekly checks leave worked days
-// uncovered, cannot be fully paid. If something marked it 'paid' (an older
-// app version misreading a calendar note did exactly this), put it back to
-// 'partial'. A wrapped job is left alone — a manual "paid" stands there.
+// Wage status follows the checks. When every wage check on a job recorded
+// the days it covered (coverage is "tracked"), the status is derived: every
+// worked day covered = paid, otherwise partial — whether the job has wrapped
+// or not, and in BOTH directions (a day added after the last check reopens
+// the job; the last weekly check closes it). Jobs whose checks carry no days
+// keep whatever the user set. Repairs keep the record's edit time so they
+// never outrank a real edit made on another device.
+let healToasted = false;
 async function healStatuses() {
   const stubsByJob = {};
   for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
+  let healed = 0;
   for (const j of await store.allJobs()) {
-    if (j.wages_status !== 'paid' || j.job_status === 'hold' || isWrapped(j)) continue;
+    if (j.job_status === 'hold') continue;
     const cov = wageCoverage(j, stubsByJob[j.id]);
-    if (cov.tracked && cov.unpaid.length) {
-      j.wages_status = 'partial';
-      await store.putJob(j, { silent: true });
-      sync.pushSoon(j).catch(() => {});
-      log('healedStatus', { project: j.project, unpaid: cov.unpaid.length });
-    }
+    if (!cov.tracked) continue;
+    const want = cov.unpaid.length ? 'partial' : 'paid';
+    if (j.wages_status === want) continue;
+    const was = j.wages_status;
+    j.wages_status = want;
+    await store.putJob(j, { silent: true, keepStamp: true });
+    sync.pushSoon(j).catch(() => {});
+    log('healedStatus', { project: j.project, was, now: want, unpaid: cov.unpaid.length });
+    healed++;
+  }
+  if (healed && !healToasted) {
+    healToasted = true;
+    toast(`Wage status corrected on ${healed} job${healed === 1 ? '' : 's'} to match its checks.`, 5000);
+    store.notifyChanged();
   }
 }
 
@@ -2496,10 +2547,13 @@ async function healStatuses() {
 // fire together.
 let syncInFlight = null;
 function backgroundSync() {
-  return syncInFlight ||= runSync().finally(() => { syncInFlight = null; });
+  return syncInFlight ||= runSync().finally(() => { syncInFlight = null; maybeReloadForUpdate(); });
 }
 async function runSync() {
   if (!auth.hasCredentials() || !settings().everConnected) return;
+  // Check for a new app version even when the login has expired — a stale
+  // device must not keep running old logic just because it is signed out.
+  navigator.serviceWorker?.getRegistration?.().then(r => r && r.update()).catch(() => {});
   try {
     await auth.token();               // silent refresh if possible
   } catch (e) {
@@ -2512,11 +2566,6 @@ async function runSync() {
   // holding an older copy of a job used to see another device's calendar
   // push as "the user edited the event", stamp its stale copy as newest and
   // overwrite the real edit everywhere.
-  // An open tab keeps running the code it loaded. Ask the browser to check
-  // for a new version on every sync, so a long-lived tab updates itself
-  // (the page reloads when a new version takes over) instead of running —
-  // and syncing with — old logic for days.
-  navigator.serviceWorker?.getRegistration?.().then(r => r && r.update()).catch(() => {});
   const errs = [];
   for (const [name, fn] of [
     ['pullSheet', () => sync.pullSheet()],
@@ -2533,6 +2582,8 @@ async function runSync() {
     // Without a fresh sheet merge this device may hold stale jobs — don't let
     // it interpret calendar changes against them.
     if (name === 'pullCalendar' && errs.includes('pullSheet')) continue;
+    // Repairs computed on a stale copy would outrank real edits elsewhere.
+    if (name === 'healStatuses' && errs.includes('pullSheet')) continue;
     try { await fn(); } catch (e) {
       errs.push(name);
       log('sync:' + name, { ok: false, code: e.code || '', msg: String(e.message).slice(0, 200) });
@@ -2554,7 +2605,10 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (hadController && !reloadedForUpdate) {
       reloadedForUpdate = true;
-      location.reload();
+      reloadPending = true;
+      if (overlayOpen || scanInFlight || syncInFlight) {
+        toast('Update ready — it applies when you leave this screen.', 5000);
+      } else maybeReloadForUpdate();
     }
   });
 }

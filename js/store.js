@@ -49,9 +49,16 @@ export const now = () => new Date().toISOString();
 // Calendar dates are plain YYYY-MM-DD strings. "Today" is the LOCAL date
 // (toISOString() is UTC — after ~4pm Pacific it is already tomorrow), and day
 // arithmetic runs in UTC so it is correct in every timezone.
-export function today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const localIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export function today() { return localIso(new Date()); }
+// Reminder events sit at 9:00 local and alert 5 minutes before. The earliest
+// day whose alert can still fire is today while it is before 08:45, else
+// tomorrow — any other cutoff moves a reminder that was about to fire.
+export const NAG_ALERT = { hour: 8, minute: 45 };
+export function earliestNagDay(now = new Date()) {
+  const beforeAlert = now.getHours() < NAG_ALERT.hour
+    || (now.getHours() === NAG_ALERT.hour && now.getMinutes() < NAG_ALERT.minute);
+  return beforeAlert ? localIso(now) : addDays(localIso(now), 1);
 }
 export function addDays(iso, n) {
   const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);

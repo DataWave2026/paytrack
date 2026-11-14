@@ -320,9 +320,10 @@ async function upsertPartReminder(job, part, idField, due) {
     }
     return;
   }
-  // A due date in the past would never notify — nudge it to tomorrow.
-  const tomorrow = addDays(store.today(), 1);
-  if (due < tomorrow) due = tomorrow;
+  // A due date whose alert has already passed would never notify — nudge it
+  // to the next day that can still alert.
+  const earliest = store.earliestNagDay();
+  if (due < earliest) due = earliest;
   const event = {
     summary: `💰 Follow up: ${job.project || 'job'} ${part} unpaid`,
     description: `PayTrack alert — ${jobToNote(job)}`,
@@ -386,9 +387,8 @@ async function upsertInvoiceReminder(job) {
     }
     return;
   }
-  // The earliest slot that can still alert: 9am today if it's early morning,
-  // otherwise tomorrow (a 9am event created at noon would never fire).
-  const earliest = new Date().getHours() < 8 ? todayIso : addDays(todayIso, 1);
+  // The earliest slot that can still alert (see store.earliestNagDay).
+  const earliest = store.earliestNagDay();
   const dueDates = [];
   if (job.invoice_status === 'unsent' && (job.end_date || job.start_date)) {
     dueDates.push(addDays(job.end_date || job.start_date, 1));
