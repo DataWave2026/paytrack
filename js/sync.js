@@ -330,7 +330,7 @@ async function upsertPartReminder(job, part, idField, due) {
     end: { dateTime: `${due}T09:30:00`, timeZone: TZ },
     reminders: {
       useDefault: false,
-      overrides: [{ method: 'email', minutes: 1 }, { method: 'popup', minutes: 1 }],
+      overrides: [{ method: 'email', minutes: 5 }, { method: 'popup', minutes: 5 }],
     },
     extendedProperties: { private: { paytrackReminderFor: job.id } },
   };
@@ -407,7 +407,7 @@ async function upsertInvoiceReminder(job) {
     recurrence: [],   // explicit: a patch of an older daily-repeating reminder clears its series
     reminders: {
       useDefault: false,
-      overrides: [{ method: 'email', minutes: 1 }, { method: 'popup', minutes: 1 }],
+      overrides: [{ method: 'email', minutes: 5 }, { method: 'popup', minutes: 5 }],
     },
     extendedProperties: { private: { paytrackReminderFor: job.id } },
   };
