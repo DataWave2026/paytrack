@@ -42,6 +42,32 @@ function h(tag, attrs = {}, ...children) {
 }
 
 const viewEl = document.getElementById('view');
+const isPhone = () => (window.matchMedia && matchMedia('(pointer: coarse)').matches) || /iPhone|iPad|Android/i.test(navigator.userAgent);
+
+// Unsaved job edits survive a reload (new version, memory pressure on the
+// phone, a process kill after the camera): the editor keeps a draft while it
+// is open; Home and Jobs offer to resume it for 24 hours.
+const DRAFT_KEY = 'paytrack.draftJob';
+function saveDraft(job, existingId) { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ job, existingId: existingId || null, t: Date.now() })); } catch {} }
+function readDraft() {
+  try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); if (d && d.job && Date.now() - d.t < 24 * 3600e3) return d; } catch {}
+  return null;
+}
+function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch {} }
+let editorAbort = null;
+function draftCard(d) {
+  const when = new Date(d.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Unsaved edit'),
+    h('p', { class: 'muted' }, `"${d.job.project || 'untitled job'}" was being edited at ${when} and never saved.`),
+    h('div', { class: 'row2' },
+      h('button', { class: 'primary', style: 'margin-top:0', onclick: async () => {
+        const existing = d.existingId ? await store.getJob(d.existingId) : null;
+        await render('jobs');
+        editJob(existing, null, d.job);
+      } }, 'Resume editing'),
+      h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => { clearDraft(); render(); } }, 'Discard')));
+}
 const toastEl = document.getElementById('toast');
 let toastTimer;
 function toast(msg, ms = 3000) {
@@ -102,7 +128,7 @@ async function render(name) {
   const keepScroll = !name;          // a background refresh keeps the position
   // A nameless (background) refresh never replaces an open editor/form.
   if (!name && overlayOpen) return;
-  if (name) overlayOpen = false;     // explicit navigation closes any overlay
+  if (name) { overlayOpen = false; editorAbort?.abort(); }   // explicit navigation closes any overlay
   currentView = name || currentView;
   document.querySelectorAll('#tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === currentView));
@@ -121,6 +147,8 @@ async function render(name) {
   // A render that finished after a newer one started, or after the user opened
   // an editor meanwhile, must not land on top of it.
   if (gen !== renderGen || (!name && overlayOpen)) return;
+  const draft = (currentView === 'home' || currentView === 'jobs') && readDraft();
+  if (draft) node.prepend(draftCard(draft));
   viewEl.replaceChildren(node);
   viewEl.scrollTop = keepScroll ? top : 0;
   if (name) maybeReloadForUpdate();
@@ -569,14 +597,22 @@ function nextPartName(name) {
   return `${name || 'Job'} (Part 2)`;
 }
 
-async function editJob(existing, prefill) {
+async function editJob(existing, prefill, draft) {
   overlayOpen = true;
   // Deep copies: the form edits `job`, `base` remembers how it looked when the
   // form opened, and Save applies only the difference onto the freshest stored
   // record — a form left open while another device saved never overwrites that
-  // device's work.
-  const job = existing ? JSON.parse(JSON.stringify(existing)) : (prefill || store.blankJob());
+  // device's work. A resumed draft replaces the form's starting values only.
+  const job = draft ? draft : (existing ? JSON.parse(JSON.stringify(existing)) : (prefill || store.blankJob()));
   const base = existing ? JSON.parse(JSON.stringify(existing)) : null;
+  const pristine = JSON.stringify(job);
+  editorAbort?.abort();
+  editorAbort = new AbortController();
+  const keepDraft = () => {
+    if (JSON.stringify(job) === pristine) clearDraft(); else saveDraft(job, existing?.id);
+  };
+  viewEl.addEventListener('input', keepDraft, { signal: editorAbort.signal });
+  viewEl.addEventListener('click', () => setTimeout(keepDraft, 0), { signal: editorAbort.signal });
   let weeks = 1;
   const input = (key, attrs = {}) => h('input', {
     value: job[key] ?? '', ...attrs,
@@ -867,6 +903,8 @@ async function editJob(existing, prefill) {
           const saved = base && j.id === base.id ? await store.updateJob(j.id, j, base) : await store.putJob(j);
           sync.pushSoon(saved).catch(e => { if (e.code !== 'NEEDS_CONNECT') toast('Calendar sync: ' + e.message, 5000); });
         }
+        editorAbort?.abort();
+        clearDraft();
         toast(toSave.length > 1 ? `Saved ${toSave.length} weekly entries.` : 'Saved.');
         render('jobs');
       },
@@ -881,6 +919,7 @@ async function editJob(existing, prefill) {
         job.keep_cal = true;
         job.calendar_event_id = '';
         job.calendar_event_ids = [];
+        clearDraft();
         await store.patchJob(job.id, { deleted: true, keep_cal: true, calendar_event_id: '', calendar_event_ids: [] });
         sync.pushSoon(job).catch(() => {});  // clears reminders only
         toast('Removed from the app; calendar untouched.');
@@ -893,12 +932,13 @@ async function editJob(existing, prefill) {
         log('jobRemoved', { project: job.project, mode: 'full' });
         await repointStubs(job);
         job.deleted = true;
+        clearDraft();
         await store.patchJob(job.id, { deleted: true });
         sync.pushSoon(job).catch(() => {});
         render('jobs');
       },
     }, 'Delete job + calendar event') : null,
-    h('button', { class: 'secondary', onclick: () => render('jobs') }, 'Cancel'),
+    h('button', { class: 'secondary', onclick: () => { clearDraft(); render('jobs'); } }, 'Cancel'),
   );
   // Per-job breakdown so the math can be checked at a glance.
   let breakdown = null;
@@ -1044,7 +1084,7 @@ function paychecksCard(stubs) {
 }
 
 // Jobs page fold state: current month + year start open, the past starts folded.
-const openMonths = new Set([new Date().toISOString().slice(0, 7)]);
+const openMonths = new Set([today().slice(0, 7)]);
 const openYears = new Set([String(new Date().getFullYear())]);
 
 // Actual stub gross when paystubs are matched to the job; rate × days otherwise.
@@ -1232,6 +1272,7 @@ function totalsCard(jobsAll, stubsByJob) {
 
 // ---------- paystub ----------
 let stubFile = null;
+let stubPreviewUrl = null, stubPreviewFor = null;
 
 async function stub() {
   const onPick = (e) => {
@@ -1255,12 +1296,24 @@ async function stub() {
       ? 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo itself is never stored, only the extracted details. You confirm everything before it counts.'
       : 'Photograph the stub (flat, well lit). It is read with Google OCR and matched to your jobs — the photo and its text are kept in a private "PayTrack Scans" folder in YOUR Drive for troubleshooting (turn off in Setup). You confirm everything before it counts.'),
     cameraInput, libraryInput,
-    h('div', { class: 'row2 mt' },
-      h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => cameraInput.click() }, 'Take a photo'),
-      h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => libraryInput.click() }, 'Choose a file…')),
+    // On a phone the camera shot lives only in this page (iOS can drop the
+    // app while the camera is up), so the Photos route is the primary one.
+    h('div', { class: 'row2 mt' }, (() => {
+      const cam = h('button', { class: 'secondary', style: 'margin-top:0', onclick: () => cameraInput.click() },
+        isPhone() ? 'Take a photo (not saved to Photos)' : 'Take a photo');
+      const lib = h('button', { class: isPhone() ? 'primary' : 'secondary', style: 'margin-top:0', onclick: () => libraryInput.click() },
+        isPhone() ? 'Choose from Photos / Files' : 'Choose a file…');
+      return isPhone() ? [lib, cam] : [cam, lib];
+    })()),
     h('p', { class: 'muted small mt' }, '…or drag a photo onto this box.'),
     h('div', {},
-      stubFile ? h('img', { class: 'stub-preview', src: URL.createObjectURL(stubFile) }) : null,
+      stubFile ? h('img', { class: 'stub-preview', src: (() => {
+        if (stubFile !== stubPreviewFor) {
+          if (stubPreviewUrl) URL.revokeObjectURL(stubPreviewUrl);
+          stubPreviewUrl = URL.createObjectURL(stubFile); stubPreviewFor = stubFile;
+        }
+        return stubPreviewUrl;
+      })() }) : null,
       stubFile ? h('button', {
         class: 'primary', onclick: () => runStubPipeline(stubFile),
       }, connected ? 'Scan & match' : 'Scan (connect Google in Setup first)') : null,
@@ -1275,7 +1328,7 @@ async function stub() {
         return h('div', { class: 'mt' },
           h('button', {
             class: 'secondary', style: 'margin-top:0',
-            onclick: () => confirmStubForm(parseStub(pend.text || ''), null, pend.text),
+            onclick: () => confirmStubForm({ ...parseStub(pend.text || ''), ...(pend.edits || {}) }, null, pend.text),
           }, `Resume last scan (${when})`),
           ' ',
           h('a', {
@@ -1352,7 +1405,21 @@ function pendingScan() {
     return p && Date.now() - p.t < 48 * 3600000 ? p : null;
   } catch { return null; }
 }
-function clearPendingScan() { try { localStorage.removeItem('paytrack.pendingScan'); } catch {} }
+function clearPendingScan() { try { localStorage.removeItem('paytrack.pendingScan'); } catch {} stubFile = null; }
+// Typed corrections on the confirm form ride along with the pending scan, so
+// a reload mid-confirm resumes with them instead of the raw parse.
+function savePendEdits(p) {
+  try {
+    const pend = JSON.parse(localStorage.getItem('paytrack.pendingScan') || 'null');
+    if (!pend) return;
+    const edits = {};
+    for (const k of ['employer', 'project_name', 'payee', 'paid_to', 'period_start', 'period_end', 'gross', 'net', 'check_no', 'check_date', 'memo', 'job_title', 'day_count', 'hours', 'hourly_rates']) {
+      if (p[k] !== undefined) edits[k] = p[k];
+    }
+    edits.earnings = p.earnings; edits.deductions = p.deductions;
+    localStorage.setItem('paytrack.pendingScan', JSON.stringify({ ...pend, edits }));
+  } catch {}
+}
 
 async function runStubPipeline(file) {
   overlayOpen = true;
@@ -1394,7 +1461,8 @@ async function runStubPipeline(file) {
       try {
         setStage('Archiving photo to your Drive…');
         const ext = img.type === 'application/pdf' ? 'pdf' : 'jpg';
-        const nm = `${new Date().toISOString().slice(0, 10)} ${(file.name || 'scan').replace(/\.\w+$/, '')}.${ext}`;
+        const hhmm = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+        const nm = `${store.today()} ${hhmm} ${(file.name || 'scan').replace(/\.\w+$/, '')}${parsed.check_no ? ' #' + parsed.check_no : ''}.${ext}`;
         parsed.drive_file_id = await g.uploadScan(img, nm, text);
         parsed.photo_name = nm;
         log('scanKept', { id: parsed.drive_file_id, name: nm });
@@ -1402,7 +1470,9 @@ async function runStubPipeline(file) {
         // .layout.json beside the photo records where each word sits, so
         // new templates can be learned from geometry, not just text order.
         if (file.type !== 'application/pdf') {
-          captureLayout(img)
+          // Word positions (Tesseract) cost a multi-MB download and a CPU
+          // burst — not on the phone while the user is typing corrections.
+          if (!isPhone()) captureLayout(img)
             .then(json => g.uploadScan(new Blob([json], { type: 'application/json' }),
               nm.replace(/\.\w+$/, '.layout.json')))
             .then(() => log('layoutKept', { name: nm }))
@@ -1480,10 +1550,6 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     }
   }
   const payeeNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
-  if (p.mixed_memo) {
-    payeeNote.append(h('span', { style: 'display:block;color:var(--warn)' },
-      'The memo mentions both labor and gear — check the earnings lines below are split between wages and equipment.'));
-  }
   if (p.payee) {
     if (p.paid_to === 'company') payeeNote.textContent = `Made out to "${p.payee}" — your company ✓`;
     else if (p.paid_to === 'me') payeeNote.textContent = `Made out to "${p.payee}" — you personally ✓`;
@@ -1491,6 +1557,10 @@ function confirmStubForm(parsed, uploaded, ocrText) {
       payeeNote.textContent = `⚠ Made out to "${p.payee}" — doesn't match your saved company or personal name. Pick who was paid (names live in Setup → Profile).`;
       payeeNote.style.color = 'var(--warn)';
     }
+  }
+  if (p.mixed_memo) {
+    payeeNote.append(h('span', { style: 'display:block;color:var(--warn)' },
+      'The memo mentions both labor and gear — check the earnings lines below are split between wages and equipment.'));
   }
   const input = (key, attrs = {}) => h('input', {
     value: Array.isArray(p[key])
@@ -1503,6 +1573,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
           .filter(n => !Number.isNaN(n));
       } else if (attrs.type === 'number') p[key] = e.target.value === '' ? null : parseFloat(e.target.value);
       else p[key] = e.target.value;
+      queueMicrotask(() => savePendEdits(p));
     },
   });
   if (!Array.isArray(p.earnings)) p.earnings = [];
@@ -1594,7 +1665,7 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     dedBox,
     ocrText ? h('details', { class: 'mt' },
       h('summary', { class: 'muted small', style: 'cursor:pointer' }, 'Raw OCR text (for troubleshooting a wrong field)'),
-      h('textarea', { readonly: 'readonly', style: 'min-height:140px;font-size:.75rem;margin-top:8px' }, ocrText),
+      h('textarea', { readonly: 'readonly', style: 'min-height:140px;font-size:1rem;margin-top:8px' }, ocrText),
       h('button', {
         class: 'inline secondary', type: 'button', style: 'margin-top:8px',
         onclick: () => navigator.clipboard?.writeText(ocrText).then(() => toast('Raw OCR text copied.')),
@@ -2343,9 +2414,17 @@ async function settingsView() {
             // Full snapshot: log + every job and payment record, saved as a
             // file that can be shared/dropped straight into a Claude session.
             const blob = new Blob([JSON.stringify(await buildBugReport(), null, 1)], { type: 'application/json' });
+            const name = `paytrack-bug-report-${store.today()}.json`;
+            if (isPhone() && navigator.canShare) {
+              const file = new File([blob], name, { type: 'application/json' });
+              if (navigator.canShare({ files: [file] })) {
+                await navigator.share({ files: [file], title: 'PayTrack bug report' }).catch(() => {});
+                return;
+              }
+            }
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = `paytrack-bug-report-${new Date().toISOString().slice(0, 10)}.json`;
+            a.download = name;
             a.click();
             setTimeout(() => URL.revokeObjectURL(a.href), 5000);
             toast('Bug report saved — send the file to Claude to debug.');
@@ -2408,7 +2487,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v114';
+const APP_VERSION = 'v115';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
