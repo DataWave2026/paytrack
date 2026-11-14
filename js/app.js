@@ -266,8 +266,8 @@ function jobRow(job, stubsByJob) {
           await store.putJob(job);
           sync.pushSoon(job).catch(() => {});
           toast(job.invoice_status === 'sent'
-            ? 'Invoice marked sent — daily reminder removed.'
-            : 'Invoice marked NOT sent — daily reminder resumes.');
+            ? 'Invoice marked sent — reminder removed.'
+            : 'Invoice marked NOT sent — reminder resumes.');
         },
       }, job.invoice_status === 'unsent' ? 'invoice: NOT SENT' : 'invoice: sent') : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
@@ -736,8 +736,8 @@ async function editJob(existing, prefill) {
       }, '+ Add week')),
       h('div', {}, h('button', { type: 'button', class: 'secondary', onclick: genWeeks }, 'Generate weeks from dates'))),
     h('p', { class: 'muted small' },
-      'Leave empty for single-invoice gear. With weeks set, gear status and total derive from the weeks, each week is owed once it ends, and the daily invoice nag covers unsent weeks.'),
-    h('label', {}, 'Invoice sent? ("Not sent" nags you daily by email until you flip it)'),
+      'Leave empty for single-invoice gear. With weeks set, gear status and total derive from the weeks, each week is owed once it ends, and the invoice reminder covers unsent weeks.'),
+    h('label', {}, 'Invoice sent? ("Not sent" sets a calendar reminder that emails you until you flip it)'),
     segmented('invoice', job.invoice_status || 'na',
       [['na', 'No invoice'], ['unsent', 'Not sent'], ['sent', 'Sent']],
       v => job.invoice_status = v),
@@ -2304,7 +2304,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v108';
+const APP_VERSION = 'v109';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

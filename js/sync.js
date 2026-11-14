@@ -359,8 +359,10 @@ async function upsertPartReminder(job, part, idField, due) {
   }
 }
 
-// Unsent invoice: a DAILY recurring nag (email + notification) that starts
-// the day after wrap and disappears the moment the invoice is marked sent.
+// Unsent invoice: ONE reminder event (email + notification) on the day after
+// wrap. While the invoice stays unsent, each sync moves it to tomorrow so a
+// fresh email goes out — one calendar line at a time, never a daily series
+// painted across every future day. Gone the moment the invoice is marked sent.
 async function upsertInvoiceReminder(job) {
   const s = settings();
   const todayIso = store.today();
@@ -389,10 +391,10 @@ async function upsertInvoiceReminder(job) {
     : '';
   const event = {
     summary: `Send invoice: ${job.project || 'job'}`,
-    description: `PayTrack — invoice not sent yet.${gearNote} Mark it "Sent" in the app to stop this daily reminder.`,
+    description: `PayTrack — invoice not sent yet.${gearNote} Mark it "Sent" in the app to clear this reminder.`,
     start: { dateTime: `${due}T09:00:00`, timeZone: TZ },
     end: { dateTime: `${due}T09:15:00`, timeZone: TZ },
-    recurrence: ['RRULE:FREQ=DAILY'],
+    recurrence: [],   // explicit: a patch of an older daily-repeating reminder clears its series
     reminders: {
       useDefault: false,
       overrides: [{ method: 'email', minutes: 1 }, { method: 'popup', minutes: 1 }],
