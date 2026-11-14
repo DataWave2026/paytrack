@@ -2304,7 +2304,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v109';
+const APP_VERSION = 'v110';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2525,6 +2525,7 @@ async function runSync() {
     ['pullCalendar', () => sync.pullCalendar()],
     ['pushDirty', () => sync.pushDirty()],
     ['pushUnsynced', () => sync.pushUnsynced()],
+    ['invoiceNag', () => sync.rearmInvoiceReminders()],
     // Upload as well as download: a job created while this device was
     // offline/disconnected must still reach the sheet eventually.
     ['mirrorSheet', () => sync.mirrorSheet()],

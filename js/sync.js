@@ -360,32 +360,42 @@ async function upsertPartReminder(job, part, idField, due) {
 }
 
 // Unsent invoice: ONE reminder event (email + notification) on the day after
-// wrap. While the invoice stays unsent, each sync moves it to tomorrow so a
-// fresh email goes out — one calendar line at a time, never a daily series
-// painted across every future day. Gone the moment the invoice is marked sent.
+// wrap. While the invoice stays unsent, rearmInvoiceReminders moves it once
+// a day to the next slot that can still alert, so a fresh email goes out
+// every morning — one calendar line at a time, never a daily series painted
+// across every future day. Gone the moment the invoice is marked sent.
+// Weekly gear invoices nag once their week has ended and they're not sent.
+function unsentGearWeeks(job) {
+  const todayIso = store.today();
+  return (job.gear_invoices || [])
+    .filter(i => i.status === 'unsent' && (i.end || i.start) && (i.end || i.start) <= todayIso);
+}
+function invoiceReminderWanted(job) {
+  return !job.deleted && job.job_status !== 'hold'
+    && ((job.invoice_status === 'unsent' && !!(job.end_date || job.start_date)) || unsentGearWeeks(job).length > 0);
+}
+
 async function upsertInvoiceReminder(job) {
   const s = settings();
   const todayIso = store.today();
-  // Weekly gear invoices nag once their week has ended and they're not sent.
-  const gearUnsent = (job.gear_invoices || [])
-    .filter(i => i.status === 'unsent' && (i.end || i.start) && (i.end || i.start) <= todayIso);
-  const wanted = !job.deleted && job.job_status !== 'hold'
-    && ((job.invoice_status === 'unsent' && (job.end_date || job.start_date)) || gearUnsent.length);
-  if (!wanted) {
+  const gearUnsent = unsentGearWeeks(job);
+  if (!invoiceReminderWanted(job)) {
     if (job.invoice_reminder_event_id) {
       await g.deleteEvent(s.calendarId, job.invoice_reminder_event_id);
       job.invoice_reminder_event_id = '';
     }
     return;
   }
-  const tomorrow = addDays(todayIso, 1);
+  // The earliest slot that can still alert: 9am today if it's early morning,
+  // otherwise tomorrow (a 9am event created at noon would never fire).
+  const earliest = new Date().getHours() < 8 ? todayIso : addDays(todayIso, 1);
   const dueDates = [];
   if (job.invoice_status === 'unsent' && (job.end_date || job.start_date)) {
     dueDates.push(addDays(job.end_date || job.start_date, 1));
   }
   for (const i of gearUnsent) dueDates.push(addDays(i.end || i.start, 1));
   let due = dueDates.sort()[0];
-  if (due < tomorrow) due = tomorrow;
+  if (due < earliest) due = earliest;
   const gearNote = gearUnsent.length
     ? ` ${gearUnsent.length} weekly gear invoice${gearUnsent.length === 1 ? '' : 's'} unsent.`
     : '';
@@ -447,13 +457,38 @@ export async function syncReminder(job) {
 // them as "the user deleted this job". Each queued push starts from the
 // freshest stored copy, so a later save is never overwritten by an earlier one.
 const pushQueues = new Map();
-export function pushJob(job) {
-  const id = job.id;
+function queued(id, fn) {
   const prev = pushQueues.get(id) || Promise.resolve();
-  const run = prev.catch(() => {}).then(() => pushJobNow(id, job));
+  const run = prev.catch(() => {}).then(fn);
   pushQueues.set(id, run);
   run.finally(() => { if (pushQueues.get(id) === run) pushQueues.delete(id); }).catch(() => {});
   return run;
+}
+export function pushJob(job) {
+  return queued(job.id, () => pushJobNow(job.id, job));
+}
+
+// Once a day, move every unsent invoice's single reminder forward to the
+// next slot that can still alert (see upsertInvoiceReminder), so a fresh
+// email + notification goes out each morning the invoice stays unsent. The
+// reminder used to be a daily series — one line on every future day — and
+// was only ever re-dated when the job itself was edited.
+export async function rearmInvoiceReminders() {
+  const s = settings();
+  if (!s.calendarId) return;
+  const todayIso = store.today();
+  if (s.lastInvoiceNag === todayIso) return;
+  let ok = true;
+  for (const job of await store.allJobs()) {
+    if (!invoiceReminderWanted(job)) continue;
+    await queued(job.id, async () => {
+      const j = (await store.getJob(job.id)) || job;
+      const before = j.invoice_reminder_event_id;
+      try { await upsertInvoiceReminder(j); } finally { await store.saveJobIds(j); }
+      if (j.invoice_reminder_event_id !== before) scheduleMirror();   // other devices must learn the new id
+    }).catch(e => { ok = false; log('invNagErr', { project: job.project, msg: String(e.message).slice(0, 120) }); });
+  }
+  if (ok) saveSettings({ lastInvoiceNag: todayIso });
 }
 
 async function pushJobNow(id, fallback) {
