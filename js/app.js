@@ -88,9 +88,7 @@ let hideMoney = settings().hideMoney;
 const MASK = '$•••';
 const fmt$ = (n) => {
   if (n === null || n === undefined || Number.isNaN(n)) return '—';
-  if (hideMoney) return MASK;
-  return '$' + Number(n).toLocaleString('en-US', Number.isInteger(n)
-    ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return hideMoney ? MASK : fmtRaw$(n);
 };
 // Never masked by the privacy eye — for text that is SAVED (job notes end up
 // on the calendar); fmt$ there would store a literal "$•••".
@@ -134,7 +132,7 @@ async function render(name) {
   const keepScroll = !name;          // a background refresh keeps the position
   // A nameless (background) refresh never replaces an open editor/form.
   if (!name && overlayOpen) return;
-  if (name) { overlayOpen = false; editorAbort?.abort(); }   // explicit navigation closes any overlay
+  if (name) { overlayOpen = false; editorAbort?.abort(); window.__pickMatchOpen = false; }   // explicit navigation closes any overlay
   currentView = name || currentView;
   document.querySelectorAll('#tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === currentView));
@@ -222,12 +220,8 @@ async function home() {
   // Red only when actually LATE (past the wages 14d / gear 30d timers, or a
   // job's own expected date); yellow = unpaid but still within terms.
   const lateWages = unpaidWages.some(j => (sync.jobDueDates(j).wages || '9999') < today());
-  const lateGear = unpaidGear.some(j => {
-    const gi = gearInv(j);
-    if (gi) return gi.dueNow.some(i =>
-      addDaysStr(i.end || i.start, settings().alertDaysGear) < today());
-    return (sync.jobDueDates(j).gear || '9999') < today();
-  });
+  // Same due date as the calendar reminder (weekly-invoice aware).
+  const lateGear = unpaidGear.some(j => (sync.jobDueDates(j).gear || '9999') < today());
   const wagesTone = unpaidWages.length ? (lateWages ? 'bad' : 'warn') : 'ok';
   const gearTone = unpaidGear.length ? (lateGear ? 'bad' : 'warn') : 'ok';
 
@@ -2597,7 +2591,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v117';
+const APP_VERSION = 'v118';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

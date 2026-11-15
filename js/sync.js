@@ -359,7 +359,12 @@ export async function pushJobToCalendar(job) {
       // overlapping saves destroy each other's events.
       const tagged = (await g.eventsByPrivateProp(s.calendarId, 'paytrackJobId', job.id))
         .filter(e => e.status !== 'cancelled');
-      const want = new Set(perDay);
+      // Re-read the day list: a merge that landed while we listed events (a
+      // day another device just added) must be kept, not deleted as "extra".
+      const freshJob = await store.getJob(job.id);
+      const days = freshJob && !freshJob.deleted && (freshJob.work_dates || []).length
+        ? [...new Set([...perDay, ...freshJob.work_dates])].filter(Boolean).sort() : perDay;
+      const want = new Set(days);
       const byDay = new Map();
       const extras = [];
       for (const ev of tagged) {
@@ -369,7 +374,7 @@ export async function pushJobToCalendar(job) {
         else extras.push(ev);   // extra day, duplicate, or old span
       }
       const ids = [];
-      for (const d of perDay) {
+      for (const d of days) {
         const ev = byDay.get(d);
         if (ev) {
           if (ev.summary !== base.summary || (ev.description || '') !== base.description) {
@@ -415,7 +420,10 @@ export function jobDueDates(job) {
     out.wages = job.expected_pay_date || addDays(base, Number(s.alertDaysWages) || 14);
   }
   if (job.gear_status !== 'paid' && job.gear_status !== 'na') {
-    out.gear = job.expected_pay_date || addDays(base, Number(s.alertDaysGear) || 30);
+    // Weekly gear invoices: the earliest ended, unpaid week sets the clock.
+    const weeks = (job.gear_invoices || []).filter(i => i.status !== 'paid' && (i.end || i.start) && (i.end || i.start) <= store.today())
+      .map(i => i.end || i.start).sort();
+    out.gear = job.expected_pay_date || addDays(weeks[0] || base, Number(s.alertDaysGear) || 30);
   }
   return out;
 }
@@ -879,7 +887,16 @@ export async function importQueuedAsJob(item, { push = true } = {}) {
     if (!job.no_cal) {
       // Tag the existing event so future edits round-trip; keep user's text.
       await g.patchEvent(s.calendarId, item.id,
-        { extendedProperties: { private: { paytrackJobId: job.id } } }).catch(() => {});
+        { extendedProperties: { private: { paytrackJobId: job.id } } })
+        .catch(async (e) => {
+          // Untagged, the link is blind: reconcile-by-tag would insert a
+          // duplicate on the first edit. Forget the id and let the next push
+          // create a tagged event instead.
+          log('importTagErr', { project: job.project, msg: String(e.message).slice(0, 120) });
+          job.calendar_event_id = '';
+          await store.saveJobIds(job);
+          markDirty(job.id);
+        });
     }
     await syncReminder(job).catch(() => {});
     await store.putJob(job, { silent: true });
