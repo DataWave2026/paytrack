@@ -280,7 +280,7 @@ async function home() {
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     totalsCard(jobs, stubsByJob),
-    paychecksCard(stubs, jobsAll),
+    paychecksCard(stubs, jobs),
     upcoming.length ? h('div', { class: 'card' },
       h('h2', {}, 'Upcoming'),
       upcoming.slice(0, 6).map(j => jobRow(j, stubsByJob))) : null,
@@ -2591,7 +2591,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v118';
+const APP_VERSION = 'v119';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
