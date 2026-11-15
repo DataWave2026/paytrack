@@ -86,6 +86,21 @@ async function ensureScansFolder() {
   return scansFolderId;
 }
 
+// Monthly hygiene: OCR text and word-layout sidecars older than `days` are
+// trashed (the photos stay). Returns how many were removed.
+export async function sweepScanSidecars(days = 90) {
+  const folder = await ensureScansFolder();
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  const q = `'${folder}' in parents and trashed = false and modifiedTime < '${cutoff}' and (name contains '.ocr.txt' or name contains '.layout.json')`;
+  const r = await call(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=200`);
+  let n = 0;
+  for (const f of r.files || []) {
+    await call(`https://www.googleapis.com/drive/v3/files/${f.id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
+    n++;
+  }
+  return n;
+}
+
 // Per-device diagnostics file, overwritten in place — one sign-in to the
 // Drive folder reads every device's logs without exporting anything by hand.
 export async function uploadDiagnostics(name, jsonString) {

@@ -12,6 +12,8 @@ const DEFAULTS = {
   theme: '',                 // '' auto | 'dark' | 'light'
   hideMoney: false,          // privacy eye: mask all dollar amounts
   keepScans: true,           // archive scan photos + OCR text in Drive (troubleshooting)
+  uploadDiag: true,          // per-device diagnostics file in Drive (redacted)
+  lastScanSweep: '',         // last monthly sweep of old OCR/layout sidecars
   sidebarHidden: false,      // collapse the nav sidebar (handy on phones)
   companyName: '',           // user's loan-out company, for payee attribution
   personalName: '',          // user's own name as it appears on stubs
@@ -58,7 +60,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => { if (e.key === KEY) cache = null; });
 }
 
+// Least privilege: events on the chosen calendar + the calendar list, never
+// the full read/write of every calendar the account can see.
 export const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
 ].join(' ');

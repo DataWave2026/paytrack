@@ -7,7 +7,7 @@ import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub, matchDebug, isTie } from './match.js';
 import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
   gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf, isFlat } from './money.js';
-import { log, dump, clearLog } from './log.js';
+import { log, dump, dumpErrors, clearLog } from './log.js';
 
 window.addEventListener('error', (e) =>
   log('error', { msg: String(e.message), src: `${(e.filename || '').split('/').pop()}:${e.lineno}` }));
@@ -33,6 +33,10 @@ function h(tag, attrs = {}, ...children) {
     else if (k === 'onclick' && tag === 'button' && v && v.constructor && v.constructor.name === 'AsyncFunction') el.addEventListener('click', busyGuard(v));
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) el.setAttribute(k, v);
+  }
+  if (tag === 'div' && attrs.onclick && !attrs.role) {
+    el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0');
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } });
   }
   for (const c of children.flat()) {
     if (c === null || c === undefined) continue;
@@ -776,7 +780,7 @@ async function editJob(existing, prefill, draft) {
     if (gearInvs.length && !confirm('Replace the current weekly invoices with freshly generated weeks?')) return;
     const end = job.end_date || job.start_date;
     const list = [];
-    for (let s0 = job.start_date; s0 <= end; s0 = addDaysStr(s0, 7)) {
+    for (let s0 = job.start_date, guard = 0; s0 <= end && guard < 60; s0 = addDaysStr(s0, 7), guard++) {
       const e0 = addDaysStr(s0, 6) < end ? addDaysStr(s0, 6) : end;
       let amount = null;
       if (job.gear_rate) {
@@ -1004,7 +1008,8 @@ async function editJob(existing, prefill, draft) {
       const gearPart = gearOnStub(s.earnings);
       const dsum = (s.deductions || []).reduce((a, d) => a + (d.amount || 0), 0) || (s.total_deductions || 0);
       const dayList = (s.work_dates || []).map(d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`).join(', ');
-      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}${s.memo ? ' · ' + s.memo : ''}${dayList ? ' · days ' + dayList : ''}`,
+      const review = (!s.check_no || s.gross === null || s.gross === undefined || !s.vendor) ? ' · needs review' : '';
+      return { label: `Check #${s.check_no || '—'}${s.check_date ? ' · ' + s.check_date : ''}${s.memo ? ' · ' + s.memo : ''}${dayList ? ' · days ' + dayList : ''}${review}`,
         gross: s.gross, gear: gearPart, wages: Math.max(0, s.gross - gearPart),
         hours: s.hours, net: s.net, dsum, dedItems: s.deductions || [],
         // Pay lines (ST/OT/per diem…) — split-check halves have no detail.
@@ -1437,7 +1442,11 @@ function loadTesseract() {
   if (!tessPromise) {
     tessPromise = new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      // Exact version + integrity hash: this third-party code runs in the
+      // page that holds the Google token, so it must be the file we vetted.
+      s.src = TESS.lib;
+      s.integrity = TESS.libHash;
+      s.crossOrigin = 'anonymous';
       s.onload = () => res(window.Tesseract);
       s.onerror = () => { tessPromise = null; rej(new Error('layout library failed to load')); };
       document.head.appendChild(s);
@@ -1445,9 +1454,16 @@ function loadTesseract() {
   }
   return tessPromise;
 }
+const TESS = {
+  lib: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+  libHash: 'sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F',
+  workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+  corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1',
+  langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+};
 async function captureLayout(blob) {
   const T = await loadTesseract();
-  const worker = await T.createWorker('eng');
+  const worker = await T.createWorker('eng', 1, { workerPath: TESS.workerPath, corePath: TESS.corePath, langPath: TESS.langPath });
   try {
     const { data } = await worker.recognize(blob);
     const words = (data.words || []).map(w => ({
@@ -1485,6 +1501,7 @@ function savePendEdits(p) {
 async function runStubPipeline(file) {
   overlayOpen = true;
   scanInFlight = true;
+  const startGen = renderGen;
   if (!auth.hasCredentials()) { scanInFlight = false; toast('Connect Google in Setup first.'); return; }
   const stage = h('span', {}, ' Starting…');
   viewEl.replaceChildren(h('div', { class: 'card center' }, h('span', { class: 'spinner' }, '…'), stage));
@@ -1548,6 +1565,12 @@ async function runStubPipeline(file) {
       earn: parsed.earnings.length,
     });
     scanInFlight = false;
+    if (renderGen !== startGen && currentView !== 'stub') {
+      // The user moved on while the scan ran: don't replace what they are
+      // doing. The result waits as "Resume last scan" on the Stub tab.
+      toast('Scan finished — open the Stub tab and tap "Resume last scan".', 6000);
+      return;
+    }
     confirmStubForm(parsed, null, text);
   } catch (e) {
     scanInFlight = false;
@@ -2049,7 +2072,7 @@ async function pickMatch(p, uploaded, ocrText) {
               total_deductions: primary ? p.total_deductions : null,
               period_start: p.period_start, period_end: p.period_end,
               hourly_rates: p.hourly_rates || [], hours: primary ? p.hours : null,
-              gross: portion, net: primary ? p.net : null,
+              gross: portion, net: null,   // the check's net belongs to the whole check, not a half
               check_no: p.check_no, check_date: p.check_date,
               matched_job_id: job.id,
               ocr_text_excerpt: (ocrText || '').slice(0, 2000),
@@ -2330,11 +2353,19 @@ async function settingsView() {
   });
   const wagesAlertInput = h('input', {
     type: 'number', value: s.alertDaysWages, inputmode: 'numeric',
-    onchange: (e) => { savePrefs({ alertDaysWages: parseInt(e.target.value, 10) || 14 }); sync.publishPrefs().catch(() => {}); },
+    onchange: (e) => {
+      const n = parseInt(e.target.value, 10);
+      if (!Number.isFinite(n) || n < 0) { e.target.value = settings().alertDaysWages; return toast('Enter a number of days (0 or more).'); }
+      savePrefs({ alertDaysWages: n }); sync.publishPrefs().catch(() => {});
+    },
   });
   const gearAlertInput = h('input', {
     type: 'number', value: s.alertDaysGear, inputmode: 'numeric',
-    onchange: (e) => { savePrefs({ alertDaysGear: parseInt(e.target.value, 10) || 30 }); sync.publishPrefs().catch(() => {}); },
+    onchange: (e) => {
+      const n = parseInt(e.target.value, 10);
+      if (!Number.isFinite(n) || n < 0) { e.target.value = settings().alertDaysGear; return toast('Enter a number of days (0 or more).'); }
+      savePrefs({ alertDaysGear: n }); sync.publishPrefs().catch(() => {});
+    },
   });
 
   const calCard = h('div', { class: 'card' },
@@ -2357,6 +2388,8 @@ async function settingsView() {
                 render('settings');
               },
             }, c.summary)));
+          picker.className = 'calpicker';
+          calCard.querySelector('.calpicker')?.remove();
           calCard.append(picker);
         } catch (e) { toast(e.message, 6000); }
       },
@@ -2444,7 +2477,12 @@ async function settingsView() {
       segmented('keepscans', s.keepScans === false ? 'off' : 'on',
         [['on', 'On (recommended for now)'], ['off', 'Off']],
         v => saveSettings({ keepScans: v === 'on' })),
-      h('p', { class: 'muted small' }, 'On: each scanned photo and its extracted text is saved to a private "PayTrack Scans" folder in YOUR Google Drive, so a misread stub can be examined later and the parser taught its template. Off: photos are never stored anywhere.')),
+      h('p', { class: 'muted small' }, 'On: each scanned photo and its extracted text is saved to a private "PayTrack Scans" folder in YOUR Google Drive, so a misread stub can be examined later and the parser taught its template. Text and layout sidecars older than 90 days are cleaned up monthly. Off: photos are never stored anywhere.'),
+      h('label', {}, 'Upload diagnostics to Drive'),
+      segmented('uploaddiag', s.uploadDiag === false ? 'off' : 'on',
+        [['on', 'On'], ['off', 'Off']],
+        v => saveSettings({ uploadDiag: v === 'on' })),
+      h('p', { class: 'muted small' }, 'On: this device writes a redacted diagnostics file (app log, jobs and payment records with long digit runs masked, no email or names) into the same private Drive folder every 30 minutes and after a failed scan, so problems can be looked at remotely. Off: nothing is uploaded; the bug report download still works.')),
     h('div', { class: 'card' },
       h('h2', {}, 'Alerts'),
       h('div', { class: 'row2' },
@@ -2559,7 +2597,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v116';
+const APP_VERSION = 'v117';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
@@ -2710,12 +2748,19 @@ async function backfillPaidVia() {
   } catch (e) { console.warn('backfill', e); }
 }
 
+// Long digit runs (account/routing numbers, SSN fragments) and anything that
+// looks like a MICR line never leave the device in a report.
+const redact = (t) => String(t || '')
+  .replace(/\d[\d\s-]{7,}\d/g, (m) => m.replace(/\d/g, '#'))
+  .replace(/[⑆⑈⑇]/g, '#');
 async function buildBugReport() {
+  const s = { ...settings() };
+  for (const k of ['googleEmail', 'clientId', 'personalName', 'companyName']) s[k] = s[k] ? '(set)' : '';
   return {
     version: APP_VERSION, ua: navigator.userAgent, time: new Date().toISOString(),
-    device: settings().deviceId || '', settings: settings(), log: dump(),
+    device: settings().deviceId || '', settings: s, log: dump(), errors: dumpErrors(),
     jobs: await store.allJobs({ includeDeleted: true }),
-    stubs: await store.allStubs(),
+    stubs: (await store.allStubs()).map(st => ({ ...st, ocr_text_excerpt: redact(st.ocr_text_excerpt) })),
   };
 }
 
@@ -2724,7 +2769,7 @@ async function buildBugReport() {
 // debugging without hand-exporting a report from every device.
 let lastDiagUp = 0;
 async function pushDiagnostics(force = false) {
-  if (!auth.isConnected() || settings().keepScans === false) return;
+  if (!auth.isConnected() || settings().uploadDiag === false) return;
   if (!force && Date.now() - lastDiagUp < 30 * 60000) return;
   lastDiagUp = Date.now();
   try {
@@ -2830,6 +2875,13 @@ async function runSync() {
   }
   log('sync', { ok: !errs.length, failed: errs });
   lastSync = { at: Date.now(), errs: errMsgs };
+  if (!errs.length && settings().keepScans !== false) {
+    const last = settings().lastScanSweep || '';
+    if (!last || Date.now() - Date.parse(last) > 30 * 86400000) {
+      saveSettings({ lastScanSweep: new Date().toISOString() });
+      g.sweepScanSidecars(90).then(n => { if (n) log('scanSweep', { removed: n }); }).catch(e => log('scanSweepErr', { msg: String(e.message).slice(0, 120) }));
+    }
+  }
   setConnDot(auth.isConnected() ? 'connected' : 'disconnected');
   pushDiagnostics().catch(() => {});
   return errMsgs;
@@ -2864,7 +2916,7 @@ if ('serviceWorker' in navigator) {
 render('home');
 setTimeout(backfillPaidVia, 800);
 setTimeout(dedupeChecks, 1200);
-window.addEventListener('load', () => setTimeout(backgroundSync, 1500));
+setTimeout(backgroundSync, 1000);   // the stored token needs no sign-in library
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') return;
   // Pick up a new version BEFORE syncing with the old logic (2 s cap so an

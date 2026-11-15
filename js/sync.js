@@ -50,6 +50,7 @@ const toRow = (cols, rec) => cols.map(c => {
 const NUM_COLS = ['days_worked', 'rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate',
   'gear_total', 'hours', 'gross', 'net', 'total_deductions', 'flat_total'];
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_COLS = ['start_date', 'end_date', 'expected_pay_date', 'check_date', 'period_start', 'period_end'];
 
 const coerce = (c, raw) => {
   const v = raw ?? '';
@@ -61,6 +62,9 @@ const coerce = (c, raw) => {
     return v === '' || Number.isNaN(n) ? null : n;
   }
   if (c === 'deleted' || c === 'no_cal' || c === 'keep_cal') return /^true$/i.test(String(v));
+  // An impossible ISO date from a hand-edited cell ("2025-13-45") would hang
+  // date loops; drop it rather than read it.
+  if (DATE_COLS.includes(c) && ISO_DAY.test(String(v)) && Number.isNaN(Date.parse(v))) return '';
   if (c === 'hourly_rates') return v ? v.split('|').map(Number).filter(n => !Number.isNaN(n)) : [];
   if (c === 'work_dates' || c === 'travel_dates') return v ? v.split('|').filter(d => ISO_DAY.test(d)) : [];
   if (c === 'calendar_event_ids') return v ? v.split('|') : [];
@@ -608,7 +612,13 @@ const setDirty = (ids) => { try { localStorage.setItem(DIRTY_KEY, JSON.stringify
 export function markDirty(id) { setDirty([...dirtyIds(), id]); }
 export function pushSoon(job) {
   setDirty([...dirtyIds(), job.id]);
-  return pushJob(job).then((r) => { setDirty(dirtyIds().filter(x => x !== job.id)); return r; });
+  const run = pushJob(job);
+  return run.then((r) => {
+    // Only the LAST queued push for this job clears its dirty mark — an
+    // earlier success must not forget a later push that then fails.
+    if (!pushQueues.has(job.id) || pushQueues.get(job.id) === run) setDirty(dirtyIds().filter(x => x !== job.id));
+    return r;
+  });
 }
 export async function pushDirty() {
   if (!settings().calendarId) return;
