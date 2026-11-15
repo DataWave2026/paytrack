@@ -6,7 +6,7 @@ import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub, matchDebug, isTie } from './match.js';
 import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
-  gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf } from './money.js';
+  gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf, isFlat } from './money.js';
 import { log, dump, clearLog } from './log.js';
 
 window.addEventListener('error', (e) =>
@@ -42,6 +42,8 @@ function h(tag, attrs = {}, ...children) {
 }
 
 const viewEl = document.getElementById('view');
+// "$1,234.56" typed into a money field is a number, not a blank.
+const parseMoneyInput = (v) => { const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isNaN(n) ? null : n; };
 const isPhone = () => (window.matchMedia && matchMedia('(pointer: coarse)').matches) || /iPhone|iPad|Android/i.test(navigator.userAgent);
 
 // Unsaved job edits survive a reload (new version, memory pressure on the
@@ -280,7 +282,7 @@ async function home() {
       unattributed ? h('p', { class: 'muted small mt' },
         `${fmt$(unattributed)} paid without a payee set — edit those jobs ("Wages paid to") or scan their stubs to attribute it.`) : null),
     totalsCard(jobs, stubsByJob),
-    paychecksCard(stubs),
+    paychecksCard(stubs, jobsAll),
     upcoming.length ? h('div', { class: 'card' },
       h('h2', {}, 'Upcoming'),
       upcoming.slice(0, 6).map(j => jobRow(j, stubsByJob))) : null,
@@ -614,14 +616,19 @@ async function editJob(existing, prefill, draft) {
   viewEl.addEventListener('input', keepDraft, { signal: editorAbort.signal });
   viewEl.addEventListener('click', () => setTimeout(keepDraft, 0), { signal: editorAbort.signal });
   let weeks = 1;
+  let hourlyTouched = false;
   const input = (key, attrs = {}) => h('input', {
     value: job[key] ?? '', ...attrs,
+    // Money fields: a text box with the decimal keypad, so "$955" or "1,250"
+    // parse instead of silently becoming blank (Safari's number input).
+    ...(attrs.type === 'number' && attrs.inputmode === 'decimal' ? { type: 'text' } : {}),
     oninput: (e) => {
       job[key] = attrs.type === 'number'
-        ? (e.target.value === '' ? null : parseFloat(e.target.value))
+        ? (e.target.value === '' ? null : parseMoneyInput(e.target.value))
         : e.target.value;
       if (['gear_rate', 'days_worked', 'start_date', 'end_date'].includes(key)) gearHintUpdate();
       if (['start_date', 'end_date'].includes(key)) updateWorkChips();
+      if (key === 'rate_hourly') hourlyTouched = true;
       if (['rate_hourly', 'rate_hours'].includes(key)) hourlyUpdate();
     },
   });
@@ -646,17 +653,38 @@ async function editJob(existing, prefill, draft) {
     : new Set();
   const workBox = h('div', { class: 'daychips' });
   const workCounter = h('p', { class: 'muted small' }, '');
+  let daysInput = null;   // assigned in the layout below
+  const syncDaysInput = () => {
+    if (!daysInput) return;
+    const chipsInUse = workSel.size > 0 && (chipsTouched || !wholeSpan) && job.start_date && (job.end_date || job.start_date) !== job.start_date;
+    daysInput.disabled = !!chipsInUse;
+    daysInput.placeholder = chipsInUse ? `= ${workSel.size} selected days` : 'e.g. 2';
+    if (chipsInUse) { daysInput.value = workSel.size; job.days_worked = workSel.size; }
+  };
   const workWrap = h('div', {},
     h('label', {}, 'Which days were actually worked? (only these get calendar events)'),
     workBox, workCounter,
     h('p', { class: 'muted small' },
       (paidDays.size ? 'Solid with $ = paid by a check. ' : '')
       + 'Right-click a day (press and hold on phone) to mark it as a travel day — estimated at the 4-hour minimum until the stub arrives.'));
+  const spanLen = () => job.start_date
+    ? Math.round((new Date(job.end_date || job.start_date) - new Date(job.start_date)) / 86400000) + 1 : 0;
   const updateWorkChips = () => {
+    if (spanLen() > 92) {
+      // The picker shows 92 days at most; a longer job would be silently cut
+      // to 92 by one tap. It stays a whole-range job instead.
+      workBox.replaceChildren(h('p', { class: 'muted small' },
+        `This job spans ${spanLen()} days — too long to pick days one by one. It stays a whole-range job; use Weeks to split a long show if you need per-day tracking.`));
+      workCounter.textContent = '';
+      workWrap.style.display = '';
+      syncDaysInput();
+      return;
+    }
     if (wholeSpan && !chipsTouched) fillSpan();
     const n = fillDayChips(workBox, job.start_date, job.end_date, workSel, workCounter, travelSel, paidDays,
-      () => { chipsTouched = true; });
+      () => { chipsTouched = true; syncDaysInput(); });
     workWrap.style.display = n > 1 ? '' : 'none';
+    syncDaysInput();
   };
 
   const hoursInput = input('rate_hours', { type: 'number', inputmode: 'numeric', placeholder: 'other' });
@@ -679,8 +707,12 @@ async function editJob(existing, prefill, draft) {
     if (!hr) { hourlyHint.textContent = ''; return; }
     if (!hrs) { hourlyHint.textContent = 'Set guaranteed hours above to calculate the day total.'; return; }
     const day = hourlyMode === 'union' && hrs > 8 ? hr * (8 + 1.5 * (hrs - 8)) : hr * hrs;
-    job.rate_amount = Math.round(day * 100) / 100;
-    rateAmountInput.value = job.rate_amount;
+    // Only an hourly rate typed in THIS session rewrites the day rate — a
+    // stored hourly plus an hours tap used to replace a typed day rate.
+    if (hourlyTouched || !job.rate_amount) {
+      job.rate_amount = Math.round(day * 100) / 100;
+      rateAmountInput.value = job.rate_amount;
+    }
     hourlyHint.textContent = `= ${fmt$(job.rate_amount)} pre-tax guaranteed / day (`
       + (hourlyMode === 'union' && hrs > 8
         ? `$${hr}/hr, 1.5x after 8: 8 + ${((hrs - 8) * 1.5).toFixed(1)} paid hrs)`
@@ -690,6 +722,15 @@ async function editJob(existing, prefill, draft) {
     [['straight', 'Straight x hrs'], ['union', '1.5x after 8']],
     v => { hourlyMode = v; hourlyUpdate(); });
 
+  // Flat fee (all-in): one total covers wages and gear; the day-rate, hourly
+  // and gear fields below are ignored and a check for the total pays the job.
+  const flatInput = input('flat_total', { type: 'number', inputmode: 'decimal', placeholder: 'e.g. 1800' });
+  const flatWrap = h('div', {},
+    h('label', {}, 'Flat fee total (wages and gear all-in)'), flatInput,
+    h('p', { class: 'muted small' }, 'With a flat fee the day-rate, hourly and gear fields are ignored. Every check for this job counts toward the total.'));
+  flatWrap.style.display = job.pay_type === 'flat' ? '' : 'none';
+  const payTypeSeg = segmented('paytype', job.pay_type || '', [['', 'Day rate'], ['flat', 'Flat fee (all-in)']],
+    v => { job.pay_type = v; flatWrap.style.display = v === 'flat' ? '' : 'none'; });
   const gearHint = h('p', { class: 'muted small' }, '');
   const gearHintUpdate = () => {
     const u = gearUnits(job);
@@ -785,7 +826,10 @@ async function editJob(existing, prefill, draft) {
       h('div', {}, h('label', {}, 'Last day'), input('end_date', { type: 'date' }))),
     workWrap,
     h('label', {}, 'Days actually worked (optional — for owed-wages estimate)'),
-    input('days_worked', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 2' }),
+    (daysInput = input('days_worked', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 2' })),
+    h('label', {}, 'How is this job paid?'),
+    payTypeSeg,
+    flatWrap,
     existing ? null : h('div', {},
       h('label', {}, 'Weeks (multi-week job: creates Week 1, Week 2, … entries, each tracked separately)'),
       h('input', {
@@ -849,6 +893,9 @@ async function editJob(existing, prefill, draft) {
         if (!job.project && !job.notes) return toast('Give the job at least a name.');
         if (job.end_date && job.start_date && job.end_date < job.start_date) job.end_date = job.start_date;
         if (weeks > 1 && !job.start_date) return toast('Multi-week jobs need a first day (of week 1).');
+        if (weeks > 1 && job.end_date && Math.round((new Date(job.end_date) - new Date(job.start_date)) / 86400000) > 6) {
+          return toast('With Weeks set, enter the dates of week 1 only (first to last day within 7 days) — the other weeks are generated from it.', 6000);
+        }
         if (job.gear_status === 'na' && (job.gear_rate || job.gear_total) && !gearTouched) job.gear_status = 'unpaid';
         job.gear_invoices = gearInvs.filter(i => i.amount || i.start || i.end);
         if (job.gear_invoices.length) {
@@ -859,6 +906,13 @@ async function editJob(existing, prefill, draft) {
           if (invSum) job.gear_total = invSum;
         }
 
+        if (job.pay_type === 'flat') {
+          // No wages/gear split on a flat fee: those fields are cleared so no
+          // screen estimates from them.
+          job.rate_amount = null; job.rate_hourly = null; job.gear_total = null; job.gear_rate = null;
+          job.gear_status = 'na'; job.gear_invoices = [];
+          if (!(job.flat_total > 0)) return toast('Enter the flat fee total.');
+        }
         const chosenDays = [...workSel]
           .filter(d => job.start_date && d >= job.start_date && d <= (job.end_date || job.start_date))
           .sort();
@@ -1021,8 +1075,10 @@ let paycheckOpen = false;
 // Quick-glance paycheck rollup from stub records: what was paid, when, how
 // many hours, and what was deducted — by month, with a per-type year total.
 // Collapsed by default.
-function paychecksCard(stubs) {
-  const dated = stubs.filter(s => s.check_date);
+function paychecksCard(stubs, jobsAll = []) {
+  // Same population as the Year totals: checks on live, non-hold jobs.
+  const live = new Set(jobsAll.filter(j => j.job_status !== 'hold').map(j => j.id));
+  const dated = stubs.filter(s => s.check_date && (!jobsAll.length || !s.matched_job_id || live.has(s.matched_job_id)));
   if (!dated.length) return null;
   const years = [...new Set(dated.map(s => s.check_date.slice(0, 4)))].sort().reverse();
   if (!years.includes(String(paycheckYear))) paycheckYear = Number(years[0]);
@@ -1104,7 +1160,11 @@ function owedDetail(j, stubsByJob) {
   let late = false;
   if (j.wages_status !== 'paid' && (o.wages > 0 || isWrapped(j))) {
     const cov = wageCoverage(j, ss);
-    if (cov.tracked) {
+    if (isFlat(j)) {
+      const w = jobWages(j, stubsByJob);
+      const got = w && w.actual ? w.amount : 0;
+      lines.push(`Flat fee ${fmt$(j.flat_total)}${got ? `, ${fmt$(got)} received on checks so far` : ', nothing received yet'} → ${fmt$(o.wages)} owed.`);
+    } else if (cov.tracked) {
       const past = cov.unpaid.filter(d => d <= today());
       const later = cov.unpaid.length - past.length;
       if (past.length) {
@@ -1162,13 +1222,16 @@ async function showOwed(month) {
   const stubsByJob = {};
   for (const st of await store.allStubs()) if (st.matched_job_id) (stubsByJob[st.matched_job_id] ||= []).push(st);
   // A month's list = the jobs with unpaid work in that month.
-  const inMonth = month ? new Set(owedEvents(jobsAll, stubsByJob).filter(e => e.m === month).map(e => e.job)) : null;
+  const evs = owedEvents(jobsAll, stubsByJob);
+  const inMonth = month ? new Set(evs.filter(e => e.m === month).map(e => e.job)) : null;
+  // The month's share of a job's owed money (the figure tapped on Home).
+  const portion = (jid) => Math.round(evs.filter(e => e.m === month && e.job === jid).reduce((a, e) => a + e.amt, 0) * 100) / 100;
   const owing = jobsAll
     .filter(j => !inMonth || inMonth.has(j.id))
-    .map(j => ({ j, d: owedDetail(j, stubsByJob) }))
+    .map(j => ({ j, d: owedDetail(j, stubsByJob), part: month ? portion(j.id) : null }))
     .filter(x => x.d.lines.length)
     .sort((a, b) => (b.d.late - a.d.late) || (b.d.total - a.d.total));
-  const total = owing.reduce((a, x) => a + x.d.total, 0);
+  const total = owing.reduce((a, x) => a + (month ? x.part : x.d.total), 0);
   const label = month
     ? new Date(month + '-02T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' })
     : 'All jobs';
@@ -1177,11 +1240,11 @@ async function showOwed(month) {
     h('p', { class: 'muted small', style: 'margin-top:0' },
       owing.length ? `${fmt$(total)} across ${owing.length} job${owing.length === 1 ? '' : 's'}. Estimates use the job's day rate until a check arrives.`
         : 'Nothing owed.'),
-    owing.map(({ j, d }) => h('div', { class: 'job', style: 'display:block', onclick: () => render('jobs').then(() => editJob(j)) },
+    owing.map(({ j, d, part }) => h('div', { class: 'job', style: 'display:block', onclick: () => render('jobs').then(() => editJob(j)) },
       h('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
         h('div', { class: 'title' }, j.project || '(untitled)'),
         h('div', { class: 'title', style: `white-space:nowrap;${d.late ? 'color:var(--bad)' : ''}` },
-          d.total ? `~${fmt$(d.total)}` : '?')),
+          month && part !== d.total ? `~${fmt$(part)} of ${fmt$(d.total)}` : (d.total ? `~${fmt$(d.total)}` : '?'))),
       h('div', { class: 'sub' }, fmtRange(j.start_date, j.end_date)),
       d.lines.map(l => h('div', { class: 'sub', style: `margin-top:4px;${/LATE/.test(l) ? 'color:var(--bad)' : ''}` }, l)))),
     h('button', { class: 'secondary', onclick: () => render('home') }, '← Back')));
@@ -1196,31 +1259,24 @@ function totalsCard(jobsAll, stubsByJob) {
   const years = [...new Set(jobs.map(j => j.start_date.slice(0, 4)))].sort().reverse();
   if (years.length && !years.includes(String(totalsYear))) totalsYear = Number(years[0]);
 
+  // One ledger for every row: paid money in the month it was PAID, owed money
+  // in the month the work was done (estimated). The Year row is the sum of
+  // the month rows by construction — three screens used to disagree.
   const months = {};
   const acc = { wagesPaid: 0, wagesDue: 0, gearPaid: 0, gearDue: 0 };
-  let estimated = 0, noAmount = 0;
-  for (const j of jobs.filter(x => x.start_date.startsWith(String(totalsYear)) && x.job_status !== 'hold')) {
-    const m = j.start_date.slice(0, 7);
-    const row = months[m] ||= { wages: 0, gear: 0 };
-    const w = jobWages(j, stubsByJob);
-    if (w) {
-      row.wages += w.amount;
-      if (!w.actual) estimated++;
-      // A weekly-paid job part-way through: add the days still to come.
-      const rem = w.actual ? wagesRemaining(j, stubsByJob[j.id]) : 0;
-      if (rem) { row.wages += rem; estimated++; }
-    } else noAmount++;
-    const gi = gearInv(j);
-    if (gi) row.gear += gi.total;
-    else if (j.gear_status !== 'na' && j.gear_total !== null && j.gear_total !== undefined) row.gear += j.gear_total;
-    const o = owedFor(j, stubsByJob);
-    acc.wagesDue += o.wages;
-    acc.gearDue += o.gear;
+  const yr = String(totalsYear);
+  const live = jobs.filter(x => x.job_status !== 'hold');
+  const row = (m) => months[m] ||= { wages: 0, gear: 0, owedW: 0, owedG: 0 };
+  for (const e of paidEvents(live, stubsByJob).filter(x => x.m.startsWith(yr))) {
+    const r = row(e.m);
+    if (e.kind === 'wages') { r.wages += e.amt; acc.wagesPaid += e.amt; } else { r.gear += e.amt; acc.gearPaid += e.amt; }
   }
-  // Paid totals = money actually received this year, by payment date.
-  for (const e of paidEvents(jobs, stubsByJob).filter(x => x.m.startsWith(String(totalsYear)))) {
-    if (e.kind === 'wages') acc.wagesPaid += e.amt; else acc.gearPaid += e.amt;
+  for (const e of owedEvents(live, stubsByJob).filter(x => x.m.startsWith(yr))) {
+    const r = row(e.m);
+    if (e.kind === 'wages') { r.owedW += e.amt; acc.wagesDue += e.amt; } else { r.owedG += e.amt; acc.gearDue += e.amt; }
   }
+  const estimated = live.filter(j => j.start_date.startsWith(yr) && owedFor(j, stubsByJob).wages > 0).length;
+  const noAmount = live.filter(j => j.start_date.startsWith(yr) && !jobWages(j, stubsByJob) && !(stubsByJob[j.id] || []).length).length;
   const monthKeys = Object.keys(months).sort();
   const monthName = (m) => new Date(m + '-02T00:00:00').toLocaleString('en-US', { month: 'short' });
   const yearSeg = h('div', { class: 'seg', style: 'margin-bottom:12px' },
@@ -1250,19 +1306,24 @@ function totalsCard(jobsAll, stubsByJob) {
       h('h2', { class: 'mt', style: 'margin-top:16px' }, 'By month'),
       monthKeys.length ? h('table', { class: 'tot' },
         h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Wages'), h('th', {}, 'Gear'), h('th', {}, 'Total')),
-        monthKeys.map(m => h('tr', {},
-          h('td', {}, monthName(m)),
-          h('td', {}, months[m].wages ? fmt$(months[m].wages) : '—'),
-          h('td', {}, months[m].gear ? fmt$(months[m].gear) : '—'),
-          h('td', {}, (months[m].wages + months[m].gear) ? fmt$(months[m].wages + months[m].gear) : '—'))),
+        monthKeys.map(m => {
+          const r = months[m];
+          const cell = (paid, owed) => (paid + owed) ? `${owed ? '~' : ''}${fmt$(paid + owed)}` : '—';
+          return h('tr', {},
+            h('td', {}, monthName(m)),
+            h('td', {}, cell(r.wages, r.owedW)),
+            h('td', {}, cell(r.gear, r.owedG)),
+            h('td', {}, cell(r.wages + r.gear, r.owedW + r.owedG)));
+        }),
         h('tr', { class: 'sum' },
           h('td', {}, 'Year'),
           h('td', {}, fmt$(acc.wagesPaid + acc.wagesDue)),
           h('td', {}, fmt$(acc.gearPaid + acc.gearDue)),
           h('td', {}, fmt$(acc.wagesPaid + acc.wagesDue + acc.gearPaid + acc.gearDue))))
         : h('p', { class: 'muted' }, 'Nothing recorded for this year.'),
+      h('p', { class: 'muted small mt' }, 'Paid money sits in the month the check is dated; ~ marks a month that also carries money still owed for work done then (estimated).'),
       (estimated || noAmount) ? h('p', { class: 'muted small mt' },
-        [estimated ? `${estimated} job${estimated === 1 ? '' : 's'} counted at rate × days (no stub matched yet).` : '',
+        [estimated ? `${estimated} job${estimated === 1 ? '' : 's'} still owe wages (estimated at the day rate).` : '',
           noAmount ? `${noAmount} job${noAmount === 1 ? '' : 's'} with no amounts not included.` : ''].filter(Boolean).join(' ')) : null),
   );
   if (totalsOpen) details.setAttribute('open', '');
@@ -1566,12 +1627,13 @@ function confirmStubForm(parsed, uploaded, ocrText) {
     value: Array.isArray(p[key])
       ? (key === 'hourly_rates' ? p[key].map(r => '$' + r).join(', ') : p[key].join(', '))
       : (p[key] ?? ''), ...attrs,
+    ...(attrs.type === 'number' && attrs.inputmode === 'decimal' ? { type: 'text' } : {}),
     oninput: (e) => {
       if (key === 'hourly_rates') {
         p[key] = e.target.value.split(/[,\s]+/)
           .map(v => parseFloat(v.replace(/[^0-9.]/g, '')))
           .filter(n => !Number.isNaN(n));
-      } else if (attrs.type === 'number') p[key] = e.target.value === '' ? null : parseFloat(e.target.value);
+      } else if (attrs.type === 'number') p[key] = e.target.value === '' ? null : parseMoneyInput(e.target.value);
       else p[key] = e.target.value;
       queueMicrotask(() => savePendEdits(p));
     },
@@ -1804,18 +1866,25 @@ async function pickMatch(p, uploaded, ocrText) {
       ? wageCoverage(chosen, stubsOnFile.filter(s => s.matched_job_id === chosen.id)).paid
       : null;
     if (chosen) {
-      // Preselect the job's days in this period that no other check paid.
+      // Preselect the job's days in this period that no other check paid. A
+      // whole-range job has no day list, so never preselect more days than
+      // the stub says were worked — weekdays first (weekends used to be
+      // counted as paid, understating what was still owed).
       const wd = new Set(chosen.work_dates || []);
-      for (const d of periodDays) {
-        if (paid.has(d)) continue;
-        if (wd.size ? wd.has(d) : (d >= chosen.start_date && d <= (chosen.end_date || chosen.start_date))) daySel.add(d);
-      }
+      const cands = periodDays.filter(d => !paid.has(d)
+        && (wd.size ? wd.has(d) : (d >= chosen.start_date && d <= (chosen.end_date || chosen.start_date))));
+      if (!wd.size && p.day_count && cands.length > p.day_count) {
+        const weekday = (d) => { const n = new Date(d + 'T00:00:00Z').getUTCDay(); return n !== 0 && n !== 6; };
+        [...cands.filter(weekday), ...cands.filter(d => !weekday(d))].slice(0, p.day_count).forEach(d => daySel.add(d));
+      } else cands.forEach(d => daySel.add(d));
     } else if (p.day_count && p.day_count === periodDays.length) {
       periodDays.forEach(d => daySel.add(d));
     }
     dayLabel.textContent = (chosen ? 'Which days does this check cover?' : 'Days actually worked')
       + (p.day_count ? ` — stub says ${p.day_count}` : '');
-    fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter, null, paid);
+    const tint = () => { dayCounter.style.color = p.day_count && daySel.size && daySel.size !== p.day_count ? 'var(--warn)' : ''; };
+    fillDayChips(dayBox, p.period_start, p.period_end, daySel, dayCounter, null, paid, tint);
+    tint();
   };
   const chipCount = periodDays.length;
   const dayWrap = h('div', { class: 'mt' }, dayLabel, dayBox, dayCounter,
@@ -1924,6 +1993,11 @@ async function pickMatch(p, uploaded, ocrText) {
     h('button', {
       class: 'primary', onclick: async () => {
         try {
+        if (p.gross !== null && p.gross !== undefined && p.gross < 0) return toast('Gross cannot be negative.');
+        if ((p.gross === null || p.gross === undefined)
+            && !confirm('No gross amount on this stub — save anyway? It will not count toward any total until an amount is added.')) return;
+        if (!split && chosen && p.day_count && daySel.size && Math.abs(daySel.size - p.day_count) > 1
+            && !confirm(`The stub says ${p.day_count} day${p.day_count === 1 ? '' : 's'} but ${daySel.size} are selected. Save anyway?`)) return;
         if (split) {
           if (!chosen || !chosen2) return toast('Pick both jobs for the split.');
           if (!(amt1 > 0) || !(amt2 > 0)) return toast('Enter the amount for each job.');
@@ -1991,6 +2065,8 @@ async function pickMatch(p, uploaded, ocrText) {
         }
         let job = chosen ? JSON.parse(JSON.stringify(chosen)) : null;
         const jobBase = chosen ? bases.get(chosen.id) : null;
+        // A flat-fee job has no gear side: a "gear" check pays the fee.
+        if (job && isFlat(job) && markGearPaid) markPaid = true;
         if (!job) {
           // Job was never logged (user error) but the payment came through:
           // create it from the stub and it gets pushed to the calendar as
@@ -2018,7 +2094,7 @@ async function pickMatch(p, uploaded, ocrText) {
         }
         job.job_status = 'confirmed';   // a payment proves the job happened
         if (markPaid) job.wages_status = 'paid';
-        if (stubGear > 0 && markGearPaid) {
+        if (stubGear > 0 && markGearPaid && !isFlat(job)) {
           // A payment short of the job's stated gear total is partial, not paid.
           const prior = gearReceived((await store.allStubs()).filter(st => st.matched_job_id === job.id
             && !(p.check_no && st.check_no === p.check_no)));
@@ -2043,10 +2119,6 @@ async function pickMatch(p, uploaded, ocrText) {
           const last = covered[covered.length - 1];
           if (last > (job.end_date || job.start_date)) job.end_date = last;
         }
-        // Pay details from the stub into the job: the straight-time hourly
-        // rate fills an empty rate field (never overwrites one you set).
-        const base = baseRateOf(p);
-        if (base && !job.rate_hourly) job.rate_hourly = base;
         // A weekly check pays its days, not the whole job: wages stay
         // 'partial' until every job day is covered by some check.
         if (markPaid && chosen && covered.length) {
@@ -2487,7 +2559,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v115';
+const APP_VERSION = 'v116';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {

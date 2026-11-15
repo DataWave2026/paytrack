@@ -7,8 +7,13 @@ import { gearOnStub } from './parse.js';
 const round2 = (n) => Math.round(n * 100) / 100;
 const stubsOf = (job, stubsByJob) => stubsByJob[job.id] || [];
 const wagePart = (s) => Math.max(0, (s.gross || 0) - gearOnStub(s.earnings));
+// Flat-fee (all-in) jobs: one total covers wages and gear, so every dollar on
+// every check counts toward it and there is no gear side at all.
+export const isFlat = (job) => !!job && job.pay_type === 'flat';
+const wagePartOf = (job, s) => isFlat(job) ? Math.max(0, s.gross || 0) : wagePart(s);
 
 export function jobDays(job) {
+  if (job.work_dates?.length) return job.work_dates.length;
   if (job.days_worked) return job.days_worked;
   if (!job.start_date) return 1;
   const d = Math.round((new Date(job.end_date || job.start_date) - new Date(job.start_date)) / 86400000) + 1;
@@ -24,6 +29,7 @@ export function isWrapped(j) {
 
 // Estimated pay for ONE day: the day rate, or the 4-hour minimum on a travel day.
 export function dayPay(job, d) {
+  if (isFlat(job)) return job.flat_total ? round2(job.flat_total / jobDays(job)) : 0;
   if (!job.rate_amount) return 0;
   if ((job.travel_dates || []).includes(d)) {
     const hourly = job.rate_hourly || job.rate_amount / (job.rate_hours || 10);
@@ -34,6 +40,7 @@ export function dayPay(job, d) {
 
 // Estimated wages for the whole job (null when no day rate is known).
 export function estWages(job) {
+  if (isFlat(job)) return job.flat_total ? round2(job.flat_total) : null;
   if (!job.rate_amount) return null;
   const travel = Math.min((job.travel_dates || []).length, jobDays(job));
   const full = jobDays(job) - travel;
@@ -47,7 +54,7 @@ export function jobWages(job, stubsByJob) {
   let sum = 0, any = false;
   for (const s of stubsOf(job, stubsByJob)) {
     if (s.gross === null || s.gross === undefined) continue;
-    const w = wagePart(s);
+    const w = wagePartOf(job, s);
     if (w > 0) { sum += w; any = true; }
   }
   if (any) return { amount: round2(sum), actual: true };
@@ -63,8 +70,10 @@ export function gearInv(job) {
   const sum = a => a.reduce((s, i) => s + (i.amount || 0), 0);
   const paid = inv.filter(i => i.status === 'paid');
   const unsent = inv.filter(i => i.status === 'unsent');
-  // A week's money is due once that week has ended — no waiting for wrap.
-  const dueNow = inv.filter(i => i.status !== 'paid' && (i.end || i.start || '9999-99-99') <= today());
+  // A week's money is due once that week has ended — no waiting for wrap. A
+  // week with no dates is due when the job wraps (it used to be due never).
+  const fallback = job.end_date || job.start_date || '9999-99-99';
+  const dueNow = inv.filter(i => i.status !== 'paid' && (i.end || i.start || fallback) <= today());
   return { n: inv.length, nPaid: paid.length, nUnsent: unsent.length,
     total: sum(inv), paidAmt: sum(paid), dueAmt: sum(dueNow), dueNow };
 }
@@ -83,7 +92,7 @@ export function wageCoverage(job, stubs) {
   const paid = new Set();
   let withDays = 0, without = 0;
   for (const s of stubs || []) {
-    if (wagePart(s) <= 0) continue;                       // gear-only check
+    if (wagePartOf(job, s) <= 0) continue;                // gear-only check
     if ((s.work_dates || []).length) { withDays++; for (const d of s.work_dates) paid.add(d); }
     else without++;
   }
@@ -95,7 +104,9 @@ export function wageCoverage(job, stubs) {
     const paidInSpan = days.filter(d => paid.has(d)).length;
     unpaid = unpaid.slice(0, Math.max(0, jobDays(job) - paidInSpan));
   }
-  const paidOnJob = explicit ? days.filter(d => paid.has(d)).length : Math.min(paid.size, jobDays(job));
+  // Paid days are counted INSIDE the job (a check moved from another job can
+  // carry days this job never had).
+  const paidOnJob = Math.min(days.filter(d => paid.has(d)).length, explicit ? days.length : jobDays(job));
   return { jobDays: days, total: explicit ? days.length : jobDays(job), paid, paidOnJob, unpaid, tracked };
 }
 
@@ -109,7 +120,8 @@ export function wagesRemaining(job, stubs) {
 }
 
 // Gear received on checks for this job.
-export const gearReceived = (stubs) => round2((stubs || []).reduce((a, s) => a + gearOnStub(s.earnings), 0));
+export const gearReceived = (stubs, job) => isFlat(job) ? 0
+  : round2((stubs || []).reduce((a, s) => a + gearOnStub(s.earnings), 0));
 
 // What a job still owes right now.
 //  wages — weekly-tracked: worked days to date no check has covered.
@@ -131,6 +143,7 @@ export function owedFor(j, stubsByJob) {
       if (est !== null) out.wages = round2(Math.max(0, est - (w && w.actual ? w.amount : 0)));
     }
   }
+  if (isFlat(j)) return out;                              // no gear side on a flat fee
   const got = gearReceived(ss);
   const gi = gearInv(j);
   if (gi) out.gear = round2(Math.max(0, gi.dueAmt - Math.max(0, got - gi.paidAmt)));
@@ -186,8 +199,8 @@ export function paidEvents(jobs, stubsByJob) {
     for (const s of stubsOf(j, stubsByJob)) {
       if (s.gross === null || s.gross === undefined) continue;
       const m = (s.check_date || j.start_date || '').slice(0, 7);
-      const g = gearOnStub(s.earnings);
-      const w = wagePart(s);
+      const g = isFlat(j) ? 0 : gearOnStub(s.earnings);
+      const w = wagePartOf(j, s);
       if (w) { ev.push({ m, kind: 'wages', amt: w, via: s.paid_to || j.paid_via }); wagesFromChecks += w; }
       if (g) { ev.push({ m, kind: 'gear', amt: g, via: s.paid_to || j.gear_paid_via || j.paid_via }); gearFromChecks += g; }
     }
@@ -208,8 +221,12 @@ export function paidEvents(jobs, stubsByJob) {
         ev.push({ m: (inv.end || inv.start || j.start_date || '').slice(0, 7), kind: 'gear', amt, via: gearVia });
         extra = round2(extra - amt);
       }
-    } else if (j.gear_status === 'paid' && j.gear_total && j.gear_total - gearFromChecks > 1) {
-      ev.push({ m: jm, kind: 'gear', amt: round2(j.gear_total - gearFromChecks), via: gearVia });
+    } else if (!isFlat(j) && j.gear_status === 'paid' && j.gear_total && !gearFromChecks && !wagesFromChecks) {
+      // Gear marked paid by hand with no check at all behind it (cash, a check
+      // never scanned). When a wage check IS on file and no gear line parsed,
+      // the kit fee rode inside that check's gross — adding the stated total
+      // on top counted it twice.
+      ev.push({ m: jm, kind: 'gear', amt: round2(j.gear_total), via: gearVia });
     }
   }
   return ev;
@@ -224,8 +241,8 @@ export function applyGearPayment(job, amount, priorReceived = 0) {
     let left = amount;
     const order = [...inv].sort((a, b) => (a.start || a.end || '').localeCompare(b.start || b.end || ''));
     for (const i of order) {
-      if (i.status === 'paid') continue;
-      if (left >= (i.amount || 0) - 1) { i.status = 'paid'; left = round2(left - (i.amount || 0)); }
+      if (i.status === 'paid' || !(i.amount > 0)) continue;   // a week without an amount is never "paid" by default
+      if (left >= i.amount - 1) { i.status = 'paid'; left = round2(left - i.amount); }
     }
     const p = inv.filter(i => i.status === 'paid').length;
     job.gear_status = p === inv.length ? 'paid' : (p || amount > 0) ? 'partial' : 'unpaid';

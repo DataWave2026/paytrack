@@ -106,6 +106,8 @@ export function blankJob() {
     rate_amount: null, rate_hours: null, rate_hourly: null, rate_text: '', gear_rate: null,
     gear_period: 'day', gear_total: null, wages_status: 'unpaid', gear_status: 'na',
     gear_invoices: [],         // weekly gear billing: [{start, end, amount, status: unsent|sent|paid}]
+    pay_type: '',              // '' day rate | 'flat' (one all-in total, no wages/gear split)
+    flat_total: null,
     paid_via: '',              // wages recipient: '' unknown | 'me' | 'company'
     gear_paid_via: '',         // gear recipient, independent of wages
     job_status: 'confirmed',   // 'confirmed' | 'hold' (potential/upcoming)

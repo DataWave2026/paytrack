@@ -29,7 +29,7 @@ const JOB_COLS = ['id', 'project', 'company', 'start_date', 'end_date', 'days_wo
   'no_cal', 'notes', 'updated_at', 'deleted',
   // Columns map to the Sheet by position — new ones must be appended here,
   // never inserted, or old rows parse shifted.
-  'rate_hourly', 'travel_dates', 'gear_invoices', 'keep_cal'];
+  'rate_hourly', 'travel_dates', 'gear_invoices', 'keep_cal', 'pay_type', 'flat_total'];
 const STUB_COLS = ['id', 'drive_file_id', 'photo_name', 'vendor', 'project_name', 'employer',
   'payee', 'classification', 'job_title', 'payroll_employer', 'paid_to', 'period_start', 'period_end', 'hourly_rates', 'hours',
   'gross', 'net', 'check_no', 'check_date', 'matched_job_id', 'earnings',
@@ -48,7 +48,7 @@ const toRow = (cols, rec) => cols.map(c => {
 });
 
 const NUM_COLS = ['days_worked', 'rate_amount', 'rate_hours', 'rate_hourly', 'gear_rate',
-  'gear_total', 'hours', 'gross', 'net', 'total_deductions'];
+  'gear_total', 'hours', 'gross', 'net', 'total_deductions', 'flat_total'];
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const coerce = (c, raw) => {

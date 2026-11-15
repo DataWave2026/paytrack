@@ -899,6 +899,7 @@ export function jobToNote(job, checks = {}) {
   const w = job.wages_status === 'paid' ? 'paid'
     : job.wages_status === 'partial' ? 'partially paid' : 'not yet paid';
   const wRef = checks.wages && job.wages_status !== 'unpaid' ? ` (check #${checks.wages})` : '';
+  if (job.pay_type === 'flat') return `${job.flat_total ? '$' + job.flat_total + ' ' : ''}flat fee ${w}${wRef}\n[PayTrack]`;
   if (job.rate_amount && job.rate_hours) parts.push(`$${job.rate_amount}/${job.rate_hours} ${w}${wRef}`);
   else if (job.rate_text) parts.push(`${job.rate_text} ${w}${wRef}`);
   else parts.push(`wages ${w}${wRef}`);
