@@ -36,7 +36,9 @@ const ALLOWED_LINES = [
 // Real clients, shows, people and the owner's own company must never appear,
 // not even in comments. (A bank's public name, e.g. CITY NATIONAL BANK, is
 // fine in a fixture — it is not personal data.)
-const DENY = new RegExp(Buffer.from("Z2lmdGVkXHMqeW91dGh8cHJvcFxzKnBsYW50fDMwMzh8aGFtbW9uZHx0LW1vYmlsZQ==", "base64").toString(), "i");
+// The denylist is stored base64-encoded so the names it guards against never
+// appear in the repo as plain text themselves.
+const DENY = new RegExp(Buffer.from('Z2lmdGVkXHMqeW91dGh8cHJvcFxzKnBsYW50fDMwMzh8aGFtbW9uZHx0LW1vYmlsZQ==', 'base64').toString(), 'i');
 
 // Denylist hits the maintainer still has to scrub, matched by OTHER text on
 // the same line so the forbidden string is not repeated here, e.g.
@@ -100,7 +102,9 @@ test('the fake-digit rule accepts the fixtures and rejects real-looking numbers'
   for (const ok of ['00000000', '11112222', '1000000001', '600000000', '12345678', '0123456789']) {
     assert.ok(obviouslyFake(ok), ok);
   }
-  for (const real of ['1000000001', '20000000', '10000000', '00000000', '600000000']) {
+  // Invented, real-LOOKING numbers (several distinct digits, no pattern) —
+  // never actual identifiers.
+  for (const real of ['48213579', '70913245', '583920174', '2946183057', '19283746']) {
     assert.ok(!obviouslyFake(real), real);
   }
 });
