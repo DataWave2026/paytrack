@@ -21,7 +21,8 @@ const DEFAULTS = {
   alertDaysGear: 30,         // days after wrap before gear rental counts as overdue
   everConnected: false,      // gate for silent background re-auth attempts
   googleEmail: '',           // login_hint so silent renewal skips the account chooser
-  calSyncToken: '',
+  calSyncToken: '',          // Google Calendar incremental sync token
+  calSyncAt: '',             // when the current token's full listing was taken
   lastSheetSync: '',
   calendarChosenAt: '',
   prefsAt: '',               // when the shared prefs below were last edited (newest wins across devices)

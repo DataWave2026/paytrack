@@ -149,6 +149,25 @@ export async function setFileProps(fileId, props) {
   });
 }
 
+// OCR an image that is ALREADY in Drive (the archived scan): copy it as a
+// Google Doc — Drive runs OCR on the copy — export the text, delete the copy.
+// One upload per scan instead of two.
+export async function ocrFromFile(fileId) {
+  const doc = await call(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?ocrLanguage=en&fields=id`, {
+    method: 'POST', json: { name: 'paytrack-ocr-temp', mimeType: 'application/vnd.google-apps.document' },
+  });
+  try {
+    const resp = await call(
+      `https://www.googleapis.com/drive/v3/files/${doc.id}/export?mimeType=text%2Fplain`, { raw: true });
+    return await resp.text();
+  } finally {
+    call(`https://www.googleapis.com/drive/v3/files/${doc.id}`, { method: 'DELETE' }).catch(() => {});
+  }
+}
+export async function renameFile(fileId, name) {
+  await call(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id`, { method: 'PATCH', json: { name } });
+}
+
 // Drive's built-in OCR: upload the image converting it to a Google Doc,
 // export the doc as plain text, then delete the temporary doc.
 export async function ocrImage(file) {

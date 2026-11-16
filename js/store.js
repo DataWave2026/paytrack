@@ -3,7 +3,7 @@
 // new devices. All records carry updated_at for newest-wins merging.
 
 const DB_NAME = 'paytrack';
-const DB_VER = 1;
+const DB_VER = 2;
 let dbp = null;
 
 export const bus = new EventTarget();
@@ -18,6 +18,7 @@ function openDB() {
       if (!db.objectStoreNames.contains('jobs')) db.createObjectStore('jobs', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('stubs')) db.createObjectStore('stubs', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('importQueue')) db.createObjectStore('importQueue', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('conflicts')) db.createObjectStore('conflicts', { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -254,12 +255,17 @@ export async function dropStubHusks() {
   return n;
 }
 
+// Did two edits really collide? Compare everything but derived ids/stamps.
+const material = (r) => { const c = { ...r }; for (const k of [...ID_FIELDS, 'updated_at']) delete c[k]; return JSON.stringify(c); };
+// Resolves with a conflict record when the remote copy beat a local edit made
+// within 10 minutes of it (the loser is kept for the journal), else null.
 export async function mergeRecord(storeName, rec) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const t = db.transaction(storeName, 'readwrite');
     const s = t.objectStore(storeName);
     const g = s.get(rec.id);
+    let conflict = null;
     g.onsuccess = () => {
       const local = g.result;
       if (!local) { s.put(rec); return; }
@@ -268,7 +274,13 @@ export async function mergeRecord(storeName, rec) {
       // tombstones from other devices. Spread over local: a column the
       // writing device's app version didn't know is absent from rec and must
       // not wipe the local value.
-      if ((rec.updated_at || '') > (local.updated_at || '')) s.put({ ...local, ...rec });
+      if ((rec.updated_at || '') > (local.updated_at || '')) {
+        const gap = Date.parse(rec.updated_at) - Date.parse(local.updated_at || 0);
+        if (storeName === 'jobs' && !local.deleted && gap < 10 * 60000 && material(local) !== material({ ...local, ...rec })) {
+          conflict = { recordId: rec.id, project: local.project || '', loser: local, winnerStamp: rec.updated_at, gapMs: gap };
+        }
+        s.put({ ...local, ...rec });
+      }
       else if (storeName === 'jobs' && rec.updated_at === local.updated_at) {
         // Same edit on both sides: adopt calendar ids the other device stored
         // (they are saved without bumping the stamp) when we have none; when
@@ -286,9 +298,39 @@ export async function mergeRecord(storeName, rec) {
         if (changed) s.put(local);
       }
     };
-    t.oncomplete = () => resolve();
+    t.oncomplete = () => resolve(conflict);
     t.onerror = () => reject(t.error);
   });
+}
+
+// ---- Conflict journal: the losing side of a close two-device edit ----
+export async function addConflict(c) {
+  const all = await getAll('conflicts');
+  const rec = { id: uid(), at: now(), ...c };
+  await tx('conflicts', 'readwrite', (s) => { s.put(rec); });
+  // Keep the newest 50.
+  const extra = all.sort((a, b) => (a.at || '').localeCompare(b.at || '')).slice(0, Math.max(0, all.length + 1 - 50));
+  for (const e of extra) await tx('conflicts', 'readwrite', (s) => { s.delete(e.id); });
+  changed();
+  return rec;
+}
+export async function allConflicts() {
+  return (await getAll('conflicts')).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+}
+export async function deleteConflict(id) {
+  await tx('conflicts', 'readwrite', (s) => { s.delete(id); });
+  changed();
+}
+// Bring the losing copy back as the newest edit (it then wins everywhere).
+export async function restoreConflict(id) {
+  const c = (await getAll('conflicts')).find(x => x.id === id);
+  if (!c) return null;
+  const current = await getJob(c.recordId);
+  const restored = { ...c.loser };
+  for (const k of ID_FIELDS) if (current && current[k] !== undefined) restored[k] = current[k];
+  await putJob(restored);
+  await deleteConflict(id);
+  return restored;
 }
 
 // ---- Stubs ----

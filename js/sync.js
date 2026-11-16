@@ -126,7 +126,7 @@ export async function syncSharedSettings() {
   let calendarChanged = false;
   if (props.calendarId && props.calendarId !== s.calendarId && (!s.calendarId || remoteAt > localAt)) {
     Object.assign(patch, { calendarId: props.calendarId, calendarName: props.calendarName || '',
-      calendarChosenAt: remoteAt, lastCalPull: '' });
+      calendarChosenAt: remoteAt, lastCalPull: '', calSyncToken: '' });
     calendarChanged = !!s.calendarId;
     log('calendarAdopted', { name: props.calendarName || '' });
   } else if (s.calendarId && (!props.calendarId || (props.calendarId !== s.calendarId && localAt > remoteAt))) {
@@ -201,7 +201,7 @@ export async function switchCalendar(id, name) {
       } catch (e) { log('calSwitchSweepErr', { project: job.project, msg: String(e.message).slice(0, 120) }); }
     }
   }
-  saveSettings({ calendarId: id, calendarName: name, calendarChosenAt: store.now(), lastCalPull: '' });
+  saveSettings({ calendarId: id, calendarName: name, calendarChosenAt: store.now(), lastCalPull: '', calSyncToken: '' });
   await resetCalendarLinks();
   await publishCalendarChoice();
 }
@@ -271,7 +271,11 @@ export async function pullSheet() {
   const jobRows = await g.readRange(s.sheetId, 'Jobs!A1:ZZ');
   let nj = 0, ns = 0;
   for (const rec of fromRows(JOB_COLS, jobRows)) {
-    if (rec.id) { nj++; await store.mergeRecord('jobs', rec); }
+    if (rec.id) {
+      nj++;
+      const conflict = await store.mergeRecord('jobs', rec);
+      if (conflict) { await store.addConflict(conflict); log('conflictKept', { project: conflict.project, gapMs: conflict.gapMs }); }
+    }
   }
   const stubRows = await g.readRange(s.sheetId, 'Paystubs!A1:ZZ');
   for (const rec of fromRows(STUB_COLS, stubRows)) {
@@ -729,22 +733,32 @@ export async function pushUnsynced() {
 export async function pullCalendar() {
   const s = settings();
   if (!s.calendarId) return;
-  const recent = () => new Date(Date.now() - 7 * 86400000).toISOString();
-  const params = (since) => ({
-    updatedMin: since, showDeleted: 'true', singleEvents: 'true',
+  // Incremental sync with Google's own token: the exact change feed since the
+  // last pull, no clock windows. The first pull (and a fresh one every 60
+  // days, so the time horizon moves, or after a 410) lists the window and
+  // keeps the token it returns. The token is only advanced when every change
+  // was handled, so a skipped item is replayed next time.
+  const windowParams = () => ({
+    showDeleted: 'true', singleEvents: 'true',
     timeMin: new Date(Date.now() - 400 * 86400000).toISOString(),
     timeMax: new Date(Date.now() + 180 * 86400000).toISOString(),
   });
-  let items, skipped = false;
+  let items, nextSyncToken = '', skipped = false, full = false;
+  const stale = !s.calSyncAt || Date.now() - Date.parse(s.calSyncAt) > 60 * 86400000;
   const pullStarted = new Date(Date.now() - 120000).toISOString();
   try {
-    ({ items } = await g.listEvents(s.calendarId, params(s.lastCalPull || recent())));
+    if (s.calSyncToken && !stale) {
+      ({ items, nextSyncToken } = await g.listEvents(s.calendarId, { syncToken: s.calSyncToken, showDeleted: 'true', singleEvents: 'true' }));
+    } else {
+      full = true;
+      ({ items, nextSyncToken } = await g.listEvents(s.calendarId, windowParams()));
+    }
   } catch (e) {
-    // Google rejects an updatedMin that lies too far in the past (410) or is
-    // malformed (400) — fall back to a recent window and carry on.
+    // An expired token (410) or a malformed request (400): full re-list.
     if (/4(00|10)/.test(e.message)) {
       log('pullCalRetry', { msg: String(e.message).slice(0, 200) });
-      ({ items } = await g.listEvents(s.calendarId, params(recent())));
+      full = true;
+      ({ items, nextSyncToken } = await g.listEvents(s.calendarId, windowParams()));
     } else throw e;
   }
   for (const ev of items) {
@@ -754,6 +768,9 @@ export async function pullCalendar() {
       // A deleted job stays deleted — calendar edits must not revive or
       // touch it (its event may deliberately outlive it).
       if (!job || job.deleted) continue;
+      // A full listing carries every cancellation ever made; only recent ones
+      // can be the user's doing.
+      if (full && ev.status === 'cancelled' && Date.parse(ev.updated || 0) < Date.now() - 7 * 86400000) continue;
       if ((ev.updated || '') <= (job.updated_at || '')) continue;  // our own push
       if (ev.status === 'cancelled') {
         // Only a CURRENTLY-linked event's cancellation can mean the user
@@ -821,7 +838,10 @@ export async function pullCalendar() {
   // Next pull starts from just before THIS one began (events changed while
   // we were processing must not be missed); not advanced if anything was
   // skipped on an error.
-  if (!skipped) saveSettings({ lastCalPull: pullStarted });
+  if (!skipped) {
+    saveSettings({ lastCalPull: pullStarted, calSyncToken: nextSyncToken || s.calSyncToken || '',
+      calSyncAt: full ? new Date().toISOString() : (s.calSyncAt || new Date().toISOString()) });
+  }
   store.notifyChanged();
 }
 

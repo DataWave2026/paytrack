@@ -5,6 +5,7 @@ import * as g from './google.js';
 import * as sync from './sync.js';
 import { parseStub, blankParse, gearOnStub } from './parse.js';
 import { matchStub, matchDebug, isTie } from './match.js';
+import { payeeMatch, autoPick, cloneWeeks, inferHourlyMode, preselectCoveredDays } from './ui-logic.js';
 import { jobDays, isWrapped, dayPay, estWages, jobWages, gearInv, wageCoverage, wagesRemaining,
   gearReceived, owedFor, owedEvents, paidEvents, applyGearPayment, baseRateOf, isFlat } from './money.js';
 import { log, dump, dumpErrors, clearLog } from './log.js';
@@ -694,9 +695,7 @@ async function editJob(existing, prefill, draft) {
   // guaranteed day total. 'straight' = hourly x hours (how the user's
   // productions quote it); 'union' = 1.5x after 8.
   let gearTouched = false;
-  let hourlyMode = 'straight';
-  if (job.rate_hourly && job.rate_hours > 8 && job.rate_amount
-      && Math.abs(job.rate_amount - job.rate_hourly * (8 + 1.5 * (job.rate_hours - 8))) < 1) hourlyMode = 'union';
+  let hourlyMode = inferHourlyMode(job);
   const rateAmountInput = input('rate_amount', { type: 'number', inputmode: 'decimal', placeholder: '955' });
   const hourlyInput = input('rate_hourly', { type: 'number', inputmode: 'decimal', placeholder: '87' });
   const hourlyHint = h('p', { class: 'muted small' }, '');
@@ -929,24 +928,7 @@ async function editJob(existing, prefill, draft) {
 
         const toSave = [];
         if (!existing && weeks > 1) {
-          for (let k = 0; k < weeks; k++) {
-            toSave.push({
-              ...job,
-              id: k === 0 ? job.id : store.uid(),
-              project: `${job.project} (Week ${k + 1})`,
-              start_date: addDaysStr(job.start_date, 7 * k),
-              end_date: addDaysStr(job.end_date || job.start_date, 7 * k),
-              work_dates: chosenForClones.map(d => addDaysStr(d, 7 * k)),
-              expected_pay_date: k === 0 ? job.expected_pay_date : '',
-              travel_dates: job.travel_dates.map(d => addDaysStr(d, 7 * k)),
-              gear_invoices: job.gear_invoices.map(i => ({
-                ...i,
-                start: i.start ? addDaysStr(i.start, 7 * k) : '',
-                end: i.end ? addDaysStr(i.end, 7 * k) : '',
-              })),
-              calendar_event_ids: [],
-            });
-          }
+          toSave.push(...cloneWeeks({ ...job, work_dates: chosenForClones }, weeks, store.uid, addDaysStr));
         } else {
           toSave.push(job);
         }
@@ -1377,7 +1359,7 @@ async function stub() {
       stubFile ? h('button', {
         class: 'primary', onclick: () => runStubPipeline(stubFile),
       }, connected ? 'Scan & match' : 'Scan (connect Google in Setup first)') : null,
-      h('button', { class: 'secondary', onclick: () => confirmStubForm(blankParse(), null, null) },
+      h('button', { class: 'secondary', onclick: () => confirmStubForm(blankParse(), null) },
         'Enter a stub manually instead'),
       (() => {
         // A scan that never finished saving can be picked back up — no
@@ -1388,7 +1370,7 @@ async function stub() {
         return h('div', { class: 'mt' },
           h('button', {
             class: 'secondary', style: 'margin-top:0',
-            onclick: () => confirmStubForm({ ...parseStub(pend.text || ''), ...(pend.edits || {}) }, null, pend.text),
+            onclick: () => confirmStubForm({ ...parseStub(pend.text || ''), ...(pend.edits || {}) }, pend.text),
           }, `Resume last scan (${when})`),
           ' ',
           h('a', {
@@ -1509,12 +1491,26 @@ async function runStubPipeline(file) {
     await auth.token();
     setStage('Preparing photo…');
     const img = file.type === 'application/pdf' ? file : await normalizeImage(file);
-    setStage('Reading with Google OCR…');
+    const keep = !!settings().keepScans;
+    const ext = img.type === 'application/pdf' ? 'pdf' : 'jpg';
+    const hhmm = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+    let nm = `${store.today()} ${hhmm} ${(file.name || 'scan').replace(/\.\w+$/, '')}.${ext}`;
+    let photoId = null;
     let text;
     try {
-      text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
+      if (keep) {
+        // One upload: the archived photo itself is OCR'd (Drive copies it as
+        // a Doc) — a second multi-MB upload on cellular used to be the norm.
+        setStage('Uploading photo to your Drive…');
+        photoId = await g.uploadScan(img, nm);
+        setStage('Reading with Google OCR…');
+        text = await g.ocrFromFile(photoId);
+      } else {
+        setStage('Reading with Google OCR…');
+        text = await g.ocrImage(img);   // temp OCR doc is deleted; photo is not stored
+      }
     } catch (e) {
-      if (/40[013]/.test(e.message) && file.type !== 'application/pdf') {
+      if (/40[03]/.test(e.message) && file.type !== 'application/pdf') {
         // Oversized/odd photos are the usual cause — shrink harder, once.
         log('scanRetry', { msg: String(e.message).slice(0, 150) });
         setStage('Retrying with a smaller image…');
@@ -1529,13 +1525,17 @@ async function runStubPipeline(file) {
     } catch {}
     // Troubleshooting archive (Setup toggle): photo + OCR text into the
     // user's own Drive so misparsed templates can be examined later.
-    if (settings().keepScans) {
+    if (keep) {
       try {
-        setStage('Archiving photo to your Drive…');
-        const ext = img.type === 'application/pdf' ? 'pdf' : 'jpg';
-        const hhmm = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
-        const nm = `${store.today()} ${hhmm} ${(file.name || 'scan').replace(/\.\w+$/, '')}${parsed.check_no ? ' #' + parsed.check_no : ''}.${ext}`;
-        parsed.drive_file_id = await g.uploadScan(img, nm, text);
+        setStage('Archiving to your Drive…');
+        if (parsed.check_no) {
+          const named = nm.replace(/\.(\w+)$/, ` #${parsed.check_no}.$1`);
+          if (photoId) await g.renameFile(photoId, named).catch(() => {});
+          nm = named;
+        }
+        if (!photoId) photoId = await g.uploadScan(img, nm);   // (the OCR fell back to a temp copy)
+        await g.uploadScan(new Blob([text || ''], { type: 'text/plain' }), nm.replace(/\.\w+$/, '.ocr.txt')).catch(() => {});
+        parsed.drive_file_id = photoId;
         parsed.photo_name = nm;
         log('scanKept', { id: parsed.drive_file_id, name: nm });
         // Word POSITIONS too (background — never delays the flow): a
@@ -1565,7 +1565,7 @@ async function runStubPipeline(file) {
       toast('Scan finished — open the Stub tab and tap "Resume last scan".', 6000);
       return;
     }
-    confirmStubForm(parsed, null, text);
+    confirmStubForm(parsed, text);
   } catch (e) {
     scanInFlight = false;
     log('scanFail', { msg: String(e.message).slice(0, 200) });
@@ -1599,34 +1599,12 @@ async function afterStubRemoved(jobId, checkNo) {
   log('stubRemovedRederived', { project: job.project, wages: job.wages_status, gear: job.gear_status });
 }
 
-function confirmStubForm(parsed, uploaded, ocrText) {
+function confirmStubForm(parsed, ocrText) {
   overlayOpen = true;
   const p = { ...parsed };
   // Auto-select who the check is made out to: the payee on the check vs the
   // two names saved in Setup -> Profile. No match = leave unset AND flag it.
-  const sqk = (x) => (x || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-  // Names also match by word set, so "DOE, JANE M." = "JANE DOE".
-  const nameWords = (x) => new Set((x || '').toLowerCase().match(/[a-z]{2,}/g) || []);
-  const wordsMatch = (a, b) => {
-    const wa = nameWords(a), wb = nameWords(b);
-    if (wa.size < 2 || wb.size < 2) return false;
-    const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
-    for (const w of small) if (!big.has(w)) return false;   // every word of the shorter name
-    return true;
-  };
-  if (!p.paid_to && p.payee) {
-    const pv = sqk(p.payee), co = sqk(settings().companyName), me = sqk(settings().personalName);
-    const hit = (x, name) => x && pv.length >= 4 && (pv.includes(x) || x.includes(pv) || wordsMatch(p.payee, name));
-    if (pv && pv === me) p.paid_to = 'me';                 // exact matches first
-    else if (pv && pv === co) p.paid_to = 'company';
-    else {
-      const isCo = hit(co, settings().companyName), isMe = hit(me, settings().personalName);
-      // Both match (company named after the person): an entity suffix decides.
-      if (isCo && isMe) p.paid_to = /\b(llc|inc|corp|ltd|co|company|productions?|media)\b/i.test(p.payee) ? 'company' : 'me';
-      else if (isCo) p.paid_to = 'company';
-      else if (isMe) p.paid_to = 'me';
-    }
-  }
+  if (!p.paid_to && p.payee) p.paid_to = payeeMatch(p.payee, settings().companyName, settings().personalName);
   const payeeNote = h('p', { class: 'muted small', style: 'margin:2px 0 0' });
   if (p.payee) {
     if (p.paid_to === 'company') payeeNote.textContent = `Made out to "${p.payee}" — your company ✓`;
@@ -1749,13 +1727,13 @@ function confirmStubForm(parsed, uploaded, ocrText) {
         class: 'inline secondary', type: 'button', style: 'margin-top:8px',
         onclick: () => navigator.clipboard?.writeText(ocrText).then(() => toast('Raw OCR text copied.')),
       }, 'Copy raw text')) : null,
-    h('button', { class: 'primary', onclick: () => pickMatch(p, uploaded, ocrText) }, 'Find matching job →'),
+    h('button', { class: 'primary', onclick: () => pickMatch(p, ocrText) }, 'Find matching job →'),
     h('button', { class: 'secondary', onclick: () => render('stub') }, 'Cancel'),
   ));
   viewEl.scrollTop = 0;
 }
 
-async function pickMatch(p, uploaded, ocrText) {
+async function pickMatch(p, ocrText) {
   overlayOpen = true;
   // Other checks already on file — their paid days show on the day picker.
   // (A re-scan of this same check is excluded, so its own days aren't "paid".)
@@ -1792,9 +1770,7 @@ async function pickMatch(p, uploaded, ocrText) {
   // Auto-pick only a clear winner — and never when the top two are the same
   // company with the same gear total (a late gear check from a repeat client
   // used to land on the newer job).
-  let chosen = candidates[0] && candidates[0].score >= 70
-    && (!candidates[1] || candidates[0].score - candidates[1].score >= 10)
-    && !isTie(candidates, p) ? candidates[0].job : null;
+  let chosen = autoPick(candidates, p, isTie);
 
   // One check can pay TWO jobs (two invoices, same company). If no single
   // job's gear total matches but a PAIR of unpaid-gear jobs sums to this
@@ -1883,17 +1859,9 @@ async function pickMatch(p, uploaded, ocrText) {
       ? wageCoverage(chosen, stubsOnFile.filter(s => s.matched_job_id === chosen.id)).paid
       : null;
     if (chosen) {
-      // Preselect the job's days in this period that no other check paid. A
-      // whole-range job has no day list, so never preselect more days than
-      // the stub says were worked — weekdays first (weekends used to be
-      // counted as paid, understating what was still owed).
-      const wd = new Set(chosen.work_dates || []);
-      const cands = periodDays.filter(d => !paid.has(d)
-        && (wd.size ? wd.has(d) : (d >= chosen.start_date && d <= (chosen.end_date || chosen.start_date))));
-      if (!wd.size && p.day_count && cands.length > p.day_count) {
-        const weekday = (d) => { const n = new Date(d + 'T00:00:00Z').getUTCDay(); return n !== 0 && n !== 6; };
-        [...cands.filter(weekday), ...cands.filter(d => !weekday(d))].slice(0, p.day_count).forEach(d => daySel.add(d));
-      } else cands.forEach(d => daySel.add(d));
+      // The job's days in this period that no other check paid (a whole-range
+      // job never gets more days than the stub says — see ui-logic.js).
+      preselectCoveredDays(chosen, periodDays, paid, p.day_count).forEach(d => daySel.add(d));
     } else if (p.day_count && p.day_count === periodDays.length) {
       periodDays.forEach(d => daySel.add(d));
     }
@@ -2239,14 +2207,14 @@ async function pickMatch(p, uploaded, ocrText) {
         }
       },
     }, 'Save'),
-    h('button', { class: 'secondary', onclick: () => confirmStubForm(p, uploaded, ocrText) }, '← Back'),
+    h('button', { class: 'secondary', onclick: () => confirmStubForm(p, ocrText) }, '← Back'),
   ));
   viewEl.scrollTop = 0;
 }
 
 // Dev hook: drive the match screen with a synthetic parsed stub from the
 // console (used for debugging the matcher without a real scan).
-window.__pickMatch = (p) => pickMatch(p, null, '');
+window.__pickMatch = (p) => pickMatch(p, '');
 
 // ---------- review (calendar import) ----------
 async function review() {
@@ -2432,7 +2400,25 @@ async function settingsView() {
         },
       }, 'Restore'))))) : null;
 
+  // Close two-device edits: the copy that lost the merge is kept, never
+  // silently discarded. Restore makes it the newest edit again.
+  const conflicts = await store.allConflicts();
+  const conflictsCard = conflicts.length ? h('div', { class: 'card' },
+    h('h2', {}, `Sync conflicts (${conflicts.length})`),
+    h('p', { class: 'muted small' }, 'Two devices edited the same job within minutes of each other; the later edit won. The version that lost is kept here.'),
+    conflicts.map(c => h('div', { class: 'job', style: 'display:block;cursor:default' },
+      h('div', { class: 'title' }, c.project || '(untitled)'),
+      h('div', { class: 'sub' }, `Lost at ${new Date(c.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · the winning edit was ${Math.round((c.gapMs || 0) / 60000)} min later`),
+      h('div', { class: 'row2 mt' },
+        h('button', { class: 'secondary', style: 'margin-top:0', onclick: async () => {
+          const r = await store.restoreConflict(c.id);
+          if (r) { sync.pushSoon(r).catch(() => {}); toast(`"${r.project}" restored to this version.`); }
+          render('settings');
+        } }, 'Restore this version'),
+        h('button', { class: 'secondary', style: 'margin-top:0', onclick: async () => { await store.deleteConflict(c.id); render('settings'); } }, 'Dismiss'))))) : null;
+
   return h('div', {},
+    conflictsCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Google connection'),
       h('p', { class: 'muted small' }, 'One-time: create an OAuth Client ID in Google Cloud console (see README) and paste it here. Your data never leaves your own Google account.'),
@@ -2591,7 +2577,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v119';
+const APP_VERSION = 'v120';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
