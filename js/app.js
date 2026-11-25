@@ -358,11 +358,33 @@ function jobRow(job, stubsByJob) {
       }, job.invoice_status === 'unsent' ? 'invoice: NOT SENT' : 'invoice: sent') : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
       (() => {
-        const gi = job.job_status === 'hold' ? null : gearInv(job);
-        if (!gi) return statusBadge('gear', job.job_status === 'hold' ? 'na' : job.gear_status);
-        const cls = gi.nPaid === gi.n ? 'paid' : gi.nPaid ? 'partial' : 'unpaid';
-        return h('span', { class: 'badge ' + cls },
-          `gear inv: ${gi.nPaid}/${gi.n} paid${gi.nUnsent ? ` · ${gi.nUnsent} unsent` : ''}`);
+        if (job.job_status === 'hold') return statusBadge('gear', 'na');
+        const gi = gearInv(job);
+        const owed = !isFlat(job) && (gi ? gi.nPaid < gi.n : (job.gear_status === 'unpaid' || job.gear_status === 'partial'));
+        const cls = gi ? (gi.nPaid === gi.n ? 'paid' : gi.nPaid ? 'partial' : 'unpaid') : job.gear_status;
+        const label = gi ? `gear inv: ${gi.nPaid}/${gi.n} paid${gi.nUnsent ? ` · ${gi.nUnsent} unsent` : ''}` : null;
+        if (!owed) return gi ? h('span', { class: 'badge ' + cls }, label) : statusBadge('gear', job.gear_status);
+        // Owed gear is one tap from paid — the same kind of control as the
+        // invoice toggle, so "the money arrived" never has to go through the
+        // editor (the invoice badge only ever meant "invoice sent").
+        const amt = gi ? Math.max(0, gi.total - gi.paidAmt) : job.gear_total;
+        return h('button', {
+          class: 'badge ' + cls, style: 'border:none;cursor:pointer;font-weight:600',
+          title: 'Tap to record the gear payment',
+          onclick: async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Record ${amt ? fmt$(amt) + ' of ' : ''}gear as PAID for "${job.project}"?\n\nUse this when the money has arrived and you are not scanning the check.`)) return;
+            const patch = { gear_status: 'paid' };
+            if (gi) patch.gear_invoices = job.gear_invoices.map(i => ({ ...i, status: 'paid' }));
+            if (job.invoice_status === 'unsent') patch.invoice_status = 'sent';
+            const line = `Gear marked paid by hand ${today()}${amt ? ` (${fmtRaw$(amt)})` : ''}`;
+            patch.notes = (job.notes || '').includes(line) ? (job.notes || '') : (job.notes ? `${job.notes}\n${line}` : line);
+            Object.assign(job, patch);
+            await store.patchJob(job.id, patch);
+            sync.pushSoon(job).catch(() => {});
+            toast(`Gear recorded as paid for ${job.project}.`);
+          },
+        }, label || `gear: ${job.gear_status === 'partial' ? 'partial' : 'UNPAID'}`);
       })()));
 }
 
@@ -2577,7 +2599,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v120';
+const APP_VERSION = 'v121';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
