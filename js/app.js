@@ -317,6 +317,25 @@ function statusBadge(kind, status) {
   return h('span', { class: 'badge ' + status }, `${kind}: ${label}`);
 }
 
+// "The money arrived": gear (or every weekly invoice) marked paid with a note,
+// the invoice flag set to sent, the change pushed. Shared by the gear badge
+// and the invoice badge on a job row.
+async function recordGearPaid(job) {
+  const gi = gearInv(job);
+  const amt = gi ? Math.max(0, gi.total - gi.paidAmt) : job.gear_total;
+  if (!confirm(`Record ${amt ? fmt$(amt) + ' of ' : ''}gear as PAID for "${job.project}"?\n\nUse this when the money has arrived and you are not scanning the check.`)) return false;
+  const patch = { gear_status: 'paid' };
+  if (gi) patch.gear_invoices = job.gear_invoices.map(i => ({ ...i, status: 'paid' }));
+  if (job.invoice_status === 'unsent') patch.invoice_status = 'sent';
+  const line = `Gear marked paid by hand ${today()}${amt ? ` (${fmtRaw$(amt)})` : ''}`;
+  patch.notes = (job.notes || '').includes(line) ? (job.notes || '') : (job.notes ? `${job.notes}\n${line}` : line);
+  Object.assign(job, patch);
+  await store.patchJob(job.id, patch);
+  sync.pushSoon(job).catch(() => {});
+  toast(`Gear recorded as paid for ${job.project}.`);
+  return true;
+}
+
 function jobRow(job, stubsByJob) {
   const rate = job.rate_amount && job.rate_hours
     ? (hideMoney ? MASK : `$${job.rate_amount}/${job.rate_hours}`)
@@ -342,20 +361,35 @@ function jobRow(job, stubsByJob) {
         },
       }, 'Confirm') : null,
       // A hold isn't an official job yet: neutral "wages: — / gear: —" until confirmed.
-      // Invoice state is a tap-toggle right on the row: not sent <-> sent.
-      ['unsent', 'sent'].includes(job.invoice_status) && job.job_status !== 'hold' ? h('button', {
-        class: 'badge ' + (job.invoice_status === 'unsent' ? 'partial' : 'paid'),
-        style: 'border:none;cursor:pointer;font-weight:600',
-        onclick: async (e) => {
-          e.stopPropagation();
-          job.invoice_status = job.invoice_status === 'unsent' ? 'sent' : 'unsent';
-          await store.patchJob(job.id, { invoice_status: job.invoice_status });
-          sync.pushSoon(job).catch(() => {});
-          toast(job.invoice_status === 'sent'
-            ? 'Invoice marked sent — reminder removed.'
-            : 'Invoice marked NOT sent — reminder resumes.');
-        },
-      }, job.invoice_status === 'unsent' ? 'invoice: NOT SENT' : 'invoice: sent') : null,
+      // Invoice state is a tap control right on the row: not sent → sent →
+      // paid. "Paid" records the gear payment (the invoice IS the gear bill).
+      ['unsent', 'sent'].includes(job.invoice_status) && job.job_status !== 'hold' ? (() => {
+        const gi = gearInv(job);
+        const gearOwed = !isFlat(job) && (gi ? gi.nPaid < gi.n : (job.gear_status === 'unpaid' || job.gear_status === 'partial'));
+        const gearPaid = gi ? gi.nPaid === gi.n : job.gear_status === 'paid';
+        const state = job.invoice_status === 'unsent' ? 'unsent' : (gearPaid ? 'paid' : 'sent');
+        return h('button', {
+          class: 'badge ' + (state === 'unsent' ? 'partial' : 'paid'),
+          style: 'border:none;cursor:pointer;font-weight:600',
+          title: state === 'unsent' ? 'Tap when the invoice has been sent' : state === 'sent' ? 'Tap when the invoice has been paid' : 'Invoice paid',
+          onclick: async (e) => {
+            e.stopPropagation();
+            if (state === 'unsent') {
+              job.invoice_status = 'sent';
+              await store.patchJob(job.id, { invoice_status: 'sent' });
+              sync.pushSoon(job).catch(() => {});
+              toast(gearOwed ? 'Invoice marked sent — reminder removed. Tap again when it has been paid.' : 'Invoice marked sent — reminder removed.', 5000);
+            } else if (state === 'sent' && gearOwed) {
+              await recordGearPaid(job);
+            } else if (confirm('Set this invoice back to NOT SENT? (The daily reminder resumes.)')) {
+              job.invoice_status = 'unsent';
+              await store.patchJob(job.id, { invoice_status: 'unsent' });
+              sync.pushSoon(job).catch(() => {});
+              toast('Invoice marked NOT sent — reminder resumes.');
+            }
+          },
+        }, state === 'unsent' ? 'invoice: NOT SENT' : state === 'paid' ? 'invoice: paid' : 'invoice: sent');
+      })() : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
       (() => {
         if (job.job_status === 'hold') return statusBadge('gear', 'na');
@@ -371,19 +405,7 @@ function jobRow(job, stubsByJob) {
         return h('button', {
           class: 'badge ' + cls, style: 'border:none;cursor:pointer;font-weight:600',
           title: 'Tap to record the gear payment',
-          onclick: async (e) => {
-            e.stopPropagation();
-            if (!confirm(`Record ${amt ? fmt$(amt) + ' of ' : ''}gear as PAID for "${job.project}"?\n\nUse this when the money has arrived and you are not scanning the check.`)) return;
-            const patch = { gear_status: 'paid' };
-            if (gi) patch.gear_invoices = job.gear_invoices.map(i => ({ ...i, status: 'paid' }));
-            if (job.invoice_status === 'unsent') patch.invoice_status = 'sent';
-            const line = `Gear marked paid by hand ${today()}${amt ? ` (${fmtRaw$(amt)})` : ''}`;
-            patch.notes = (job.notes || '').includes(line) ? (job.notes || '') : (job.notes ? `${job.notes}\n${line}` : line);
-            Object.assign(job, patch);
-            await store.patchJob(job.id, patch);
-            sync.pushSoon(job).catch(() => {});
-            toast(`Gear recorded as paid for ${job.project}.`);
-          },
+          onclick: async (e) => { e.stopPropagation(); await recordGearPaid(job); },
         }, label || `gear: ${job.gear_status === 'partial' ? 'partial' : 'UNPAID'}`);
       })()));
 }
@@ -2599,7 +2621,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v121';
+const APP_VERSION = 'v122';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
