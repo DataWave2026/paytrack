@@ -147,8 +147,14 @@ details.card.inner .job.sumrow { background: rgba(127, 127, 127, .2); }
 .job > div:first-child { min-width: 0; }
 .job .title { font-weight: 600; overflow-wrap: break-word; }
 .job .sub { font-size: .78rem; color: var(--muted); margin-top: 2px; overflow-wrap: break-word; }
-.badges { display: flex; gap: 6px; flex-shrink: 0; }
-.badge { font-size: .65rem; padding: 3px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
+.badges { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+/* Every pill — plain or tappable — is the same shape with the text centered. */
+.badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 30px; padding: 0 10px; border-radius: 20px;
+  font: inherit; font-size: .7rem; font-weight: 600; line-height: 1; white-space: nowrap;
+  border: none; margin: 0;
+}
 .badge.paid { background: rgba(76,195,138,.15); color: var(--accent); }
 .badge.unpaid { background: rgba(229,115,95,.15); color: var(--bad); }
 .badge.partial { background: rgba(229,181,103,.15); color: var(--warn); }
@@ -178,8 +184,8 @@ button.primary { background: var(--accent); color: #08130d; }
 button.secondary { background: var(--panel2); color: var(--text); }
 button.danger { background: none; color: var(--bad); border: 1px solid var(--bad); }
 button.inline { width: auto; margin: 0; padding: 8px 12px; font-size: .85rem; }
-/* The invoice toggle on a job row is a tappable control, not a 20px chip. */
-button.badge { min-height: 30px; padding: 6px 10px; font-size: .7rem; }
+/* Tappable pills: same shape as the plain ones. */
+button.badge { cursor: pointer; }
 
 .seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .seg button {

@@ -311,10 +311,11 @@ function emptyHint() {
   return h('p', { class: 'muted' }, 'No completed jobs yet. Add one in the Jobs tab, or import your calendar history from the Import tab.');
 }
 
+const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
 function statusBadge(kind, status) {
-  if (status === 'na') return h('span', { class: 'badge na' }, kind + ': —');
-  const label = status === 'paid' ? 'paid' : status === 'partial' ? 'partial' : 'UNPAID';
-  return h('span', { class: 'badge ' + status }, `${kind}: ${label}`);
+  if (status === 'na') return h('span', { class: 'badge na' }, cap(kind) + ': —');
+  const label = status === 'paid' ? 'Paid' : status === 'partial' ? 'Partial' : 'Unpaid';
+  return h('span', { class: 'badge ' + status }, `${cap(kind)}: ${label}`);
 }
 
 // "The money arrived": gear (or every weekly invoice) marked paid with a note,
@@ -349,7 +350,7 @@ function jobRow(job, stubsByJob) {
         job.days_worked ? `${job.days_worked} day${job.days_worked === 1 ? '' : 's'}` : '', rate, amt,
         job.gear_total ? `gear ${fmt$(job.gear_total)}` : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'badges' },
-      job.job_status === 'hold' ? h('span', { class: 'badge partial' }, 'HOLD') : null,
+      job.job_status === 'hold' ? h('span', { class: 'badge partial' }, 'Hold') : null,
       job.job_status === 'hold' ? h('button', {
         class: 'inline secondary', style: 'font-size:.7rem;padding:4px 9px',
         onclick: async (e) => {
@@ -388,7 +389,7 @@ function jobRow(job, stubsByJob) {
               toast('Invoice marked NOT sent — reminder resumes.');
             }
           },
-        }, state === 'unsent' ? 'invoice: NOT SENT' : state === 'paid' ? 'invoice: paid' : 'invoice: sent');
+        }, state === 'unsent' ? 'Invoice: Not Sent' : state === 'paid' ? 'Invoice: Paid' : 'Invoice: Sent');
       })() : null,
       statusBadge('wages', job.job_status === 'hold' ? 'na' : job.wages_status),
       (() => {
@@ -396,7 +397,7 @@ function jobRow(job, stubsByJob) {
         const gi = gearInv(job);
         const owed = !isFlat(job) && (gi ? gi.nPaid < gi.n : (job.gear_status === 'unpaid' || job.gear_status === 'partial'));
         const cls = gi ? (gi.nPaid === gi.n ? 'paid' : gi.nPaid ? 'partial' : 'unpaid') : job.gear_status;
-        const label = gi ? `gear inv: ${gi.nPaid}/${gi.n} paid${gi.nUnsent ? ` · ${gi.nUnsent} unsent` : ''}` : null;
+        const label = gi ? `Gear Inv: ${gi.nPaid}/${gi.n} Paid${gi.nUnsent ? ` · ${gi.nUnsent} Unsent` : ''}` : null;
         if (!owed) return gi ? h('span', { class: 'badge ' + cls }, label) : statusBadge('gear', job.gear_status);
         // Owed gear is one tap from paid — the same kind of control as the
         // invoice toggle, so "the money arrived" never has to go through the
@@ -406,7 +407,7 @@ function jobRow(job, stubsByJob) {
           class: 'badge ' + cls, style: 'border:none;cursor:pointer;font-weight:600',
           title: 'Tap to record the gear payment',
           onclick: async (e) => { e.stopPropagation(); await recordGearPaid(job); },
-        }, label || `gear: ${job.gear_status === 'partial' ? 'partial' : 'UNPAID'}`);
+        }, label || `Gear: ${job.gear_status === 'partial' ? 'Partial' : 'Unpaid'}`);
       })()));
 }
 
@@ -2621,7 +2622,7 @@ navBtn.addEventListener('click', () => {
 applySidebar();
 
 // Keep in sync with the CACHE version in sw.js on every release.
-const APP_VERSION = 'v122';
+const APP_VERSION = 'v123';
 log('boot', { v: APP_VERSION, mobile: /iPhone|Android/i.test(navigator.userAgent) });
 document.getElementById('ver').textContent = APP_VERSION;
 function setConnDot(state) {
